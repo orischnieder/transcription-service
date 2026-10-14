@@ -15,3 +15,9 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     redis: Literal["ok"]
+
+
+class LimitsResponse(BaseModel):
+    allowed_extensions: list[str]
+    max_upload_mb: int
+    max_duration_sec: int

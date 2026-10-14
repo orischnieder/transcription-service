@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     whisper_model: str = "Systran/faster-whisper-small"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    whisper_vad: bool = True
 
     max_upload_mb: int = Field(default=200, gt=0)
     max_duration_sec: int = Field(default=3600, gt=0)

@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response
 from redis import Redis
 
-from app.api import routes_health
+from app.api import routes_health, routes_jobs
 from app.api.errors import register_error_handlers
 from app.config import Settings, get_settings
 from app.logging_config import configure_logging
@@ -29,15 +29,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             socket_connect_timeout=REDIS_TIMEOUT_SEC,
             socket_timeout=REDIS_TIMEOUT_SEC,
         )
-        logger.info("api started", extra={"engine": settings.engine})
+        settings.upload_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("api started", extra={"upload_dir": str(settings.upload_dir)})
         yield
         app.state.redis.close()
         logger.info("api stopped")
 
     app = FastAPI(title="Transcription Service", version="0.1.0", lifespan=lifespan)
+    app.state.settings = settings
     register_error_handlers(app)
     app.middleware("http")(log_requests)
     app.include_router(routes_health.router)
+    app.include_router(routes_jobs.router)
     return app
 
 

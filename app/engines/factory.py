@@ -15,4 +15,5 @@ def create_engine(settings: Settings) -> TranscriptionEngine:
         model_id=settings.whisper_model,
         device=settings.whisper_device,
         compute_type=settings.whisper_compute_type,
+        vad=settings.whisper_vad,
     )

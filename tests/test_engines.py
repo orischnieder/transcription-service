@@ -56,11 +56,13 @@ def test_factory_builds_faster_whisper_engine_from_settings() -> None:
             whisper_model="Systran/faster-whisper-base",
             whisper_device="cpu",
             whisper_compute_type="int8",
+            whisper_vad=False,
         )
     )
 
     assert isinstance(engine, FasterWhisperEngine)
     assert engine._model.init_args == ("Systran/faster-whisper-base", "cpu", "int8")
+    assert engine._vad is False
 
 
 # FasterWhisperEngine (with the model replaced)
@@ -68,7 +70,7 @@ def test_factory_builds_faster_whisper_engine_from_settings() -> None:
 
 @pytest.mark.usefixtures("fake_whisper_model")
 def test_faster_whisper_engine_builds_result_and_reports_progress() -> None:
-    engine = FasterWhisperEngine("any/model", "cpu", "int8")
+    engine = FasterWhisperEngine("any/model", "cpu", "int8", vad=True)
     progress: list[float] = []
 
     result = engine.transcribe(MEDIA, language="en", on_progress=progress.append)
@@ -78,7 +80,7 @@ def test_faster_whisper_engine_builds_result_and_reports_progress() -> None:
     assert result.duration_sec == 10.0
     assert result.segments == [Segment(0.0, 5.0, "Hello"), Segment(5.0, 10.0, "world.")]
     assert progress == [50.0, 100.0, 100.0]
-    assert engine._model.transcribe_kwargs["language"] == "en"
+    assert engine._model.transcribe_kwargs == {"language": "en", "vad_filter": True}
 
 
 # FakeEngine

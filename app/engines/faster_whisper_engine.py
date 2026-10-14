@@ -12,16 +12,18 @@ logger = logging.getLogger(__name__)
 class FasterWhisperEngine:
     """Whisper via faster-whisper (CTranslate2). The model is loaded once, in the constructor."""
 
-    def __init__(self, model_id: str, device: str, compute_type: str) -> None:
+    def __init__(self, model_id: str, device: str, compute_type: str, vad: bool) -> None:
         start = time.perf_counter()
         # A Hugging Face repo id is downloaded to HF_HOME on first use, then read from the cache.
         self._model = WhisperModel(model_id, device=device, compute_type=compute_type)
+        self._vad = vad
         logger.info(
             "model loaded",
             extra={
                 "model": model_id,
                 "device": device,
                 "compute_type": compute_type,
+                "vad": vad,
                 "load_sec": round(time.perf_counter() - start, 2),
             },
         )
@@ -32,7 +34,11 @@ class FasterWhisperEngine:
         language: str | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> TranscriptionResult:
-        raw_segments, info = self._model.transcribe(str(path), language=language)
+        # The VAD filter (Silero, bundled with faster-whisper) skips non-speech audio, which is
+        # faster on recordings with silence and avoids text hallucinated from noise.
+        raw_segments, info = self._model.transcribe(
+            str(path), language=language, vad_filter=self._vad
+        )
 
         # `raw_segments` is a lazy generator: the actual decoding happens while we iterate it.
         segments: list[Segment] = []

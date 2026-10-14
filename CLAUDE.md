@@ -137,6 +137,7 @@ with a generic message and are logged with a stack trace.
 | `WHISPER_MODEL` | `Systran/faster-whisper-small` |
 | `WHISPER_DEVICE` | `cpu` |
 | `WHISPER_COMPUTE_TYPE` | `int8` |
+| `WHISPER_VAD` | `true` |
 | `MAX_UPLOAD_MB` | `200` |
 | `MAX_DURATION_SEC` | `3600` |
 | `REDIS_URL` | `redis://redis:6379/0` |
