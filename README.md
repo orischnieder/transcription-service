@@ -8,8 +8,6 @@ background worker, so the page stays responsive while the model works.
 
 ![Result page: an English phone video transcribed into three timestamped segments](docs/images/result_EN.png)
 
-Full decision log with alternatives and measurements: [NOTES.md](NOTES.md).
-
 ---
 
 ## Quick start
@@ -29,8 +27,8 @@ Open **http://localhost:8000** and drop in an audio or video file.
   volume. This happens once; later starts load it from the volume in a few seconds. The worker only takes jobs
   after the model is loaded, so the very first job waits for the download.
 - No `.env` file is needed; every setting has a default (see [Configuration](#configuration)).
-- Stop with `Ctrl+C`, or `docker compose down` (add `-v` to also delete the downloaded model and any
-  pending uploads).
+- Stop with `Ctrl+C`, or `docker compose down`. `docker compose down -v` resets all data: jobs and
+  results, the downloaded model and any pending uploads.
 
 ---
 
@@ -127,8 +125,6 @@ without touching the API.
 
 ## Key decisions
 
-Each decision with its full reasoning and measurements is in [NOTES.md](NOTES.md).
-
 | Decision | Why | Main alternative |
 |---|---|---|
 | **FastAPI** + Pydantic | Request validation, typed responses and OpenAPI docs at `/docs` out of the box | Flask (validation and docs by hand) |
@@ -193,14 +189,16 @@ with `MSYS_NO_PATHCONV=1` so `/samples` is not rewritten to a Windows path.
 - **Single worker.** Jobs run one at a time. When the worker starts, it marks jobs stuck in `processing`
   as `failed` (`worker_restarted`) and deletes their files; this assumes it is the only worker. With
   several workers it would need a heartbeat per job.
-- **Redis without persistence.** Job state and results live 24 h in Redis with no volume; restarting Redis
-  loses them. Fine for short-lived jobs, not for history.
+- **Redis persistence is append-only with fsync every second**, so a Redis restart keeps the queue, jobs
+  and results; at most about the last second of writes can be lost. A short Redis outage does not
+  interrupt jobs or show errors to the user; if Redis is down when a job finishes, the job is marked
+  failed (`worker_restarted`) once Redis is back.
 - **Upload size gap.** The API rejects uploads whose `Content-Length` is too large before reading them, and
   counts bytes while copying. A client that sends no `Content-Length` can still make Starlette buffer the
   whole body in `/tmp` before the count rejects it. In production the hard limit belongs at the reverse
   proxy (e.g. nginx `client_max_body_size`).
 - **One image for api and worker (1.42 GB).** The API container carries ffmpeg, CTranslate2 and
-  onnxruntime although it only needs ffprobe. Simpler to build; a split image is a production step.
+  onnxruntime although it only needs ffprobe. Simpler to build and keep in sync.
 - **Hebrew accuracy with `small` is noticeably lower than English** (tested with a real phone recording;
   right-to-left display works). ivrit.ai's Hebrew model works as a drop-in (`WHISPER_MODEL=ivrit-ai/whisper-large-v3-turbo-ct2`,
   Apache-2.0, 1.6 GB) but ran at ~1.8–2× slower than real time on this CPU, so it needs a GPU or higher
@@ -274,7 +272,7 @@ with an error code, media file deleted after every job, orphaned jobs on worker 
 throttling, SRT/TXT formatting, the job store and queue, the engine factory, logging, and the UI being
 served without external assets.
 
-**Manual tests** with the real model (details in [NOTES.md](NOTES.md)):
+**Manual tests** with the real model:
 
 | File | Result |
 |---|---|
@@ -293,25 +291,22 @@ Robustness to background noise was not measured.
 
 ## Production next steps
 
-- **Reverse proxy** in front of the API: TLS, a hard upload size limit, request timeouts.
-- **Authentication and rate limits** per user; today anyone who can reach the port can upload.
-- **GPU workers** (`WHISPER_DEVICE=cuda`, `WHISPER_COMPUTE_TYPE=float16`) and **several workers**, with a
-  per-job heartbeat so orphan recovery stays correct.
-- **Durable job storage**: Redis with persistence (or a managed Redis / database) and object storage for
-  uploads instead of a shared volume.
-- **Separate API and worker images**, so the API image does not carry the ML stack.
-- **A lockfile** (e.g. uv or pip-tools) to pin transitive dependencies.
-- **Extract the audio track** on upload (or in the browser) to store and move far less data for video.
-- **Server-sent events** instead of polling, and **job cancellation**.
-- **Metrics and alerts**: queue length, job duration, real-time factor, failure rate by error code.
+- **Several workers, on GPU.** The queue already supports more workers
+  (`docker compose up --scale worker=N`); orphan recovery would first need a per-job heartbeat, so a
+  restarting worker does not fail jobs that another worker is running.
+- **Job state in a database.** A database as the source of truth for jobs, Redis only as the queue,
+  and uploads and results in object storage instead of a shared volume.
+- **A reverse proxy and authentication.** TLS, a hard upload size limit and per-user rate limits in
+  front of the API; today anyone who can reach the port can upload.
+- **Metrics and alerts.** Queue length, job duration, real-time factor and failure rate by error code.
 
 ---
 
 ## How I used AI
 
-The project was built with Claude Code, working from a `CLAUDE.md` (requirements, decisions, standards)
-and a milestone plan (`PLAN.md`), one milestone at a time. I reviewed, ran and tested every milestone
-myself before committing, made the decisions recorded in [NOTES.md](NOTES.md) (for example the default
-model, the 1 GB limit, orphan-job recovery and log levels), and found several issues through my own
-manual testing with real phone videos, such as the progress bar sitting at 0% for short files and the
-worker contacting huggingface.co on every start. Those findings were then fixed and documented.
+I built the project with Claude Code from a written spec (requirements, decisions, standards) and a
+milestone plan, one milestone at a time. I reviewed, ran and tested every milestone before committing,
+and made the decisions (for example the default model, the 1 GB limit, orphan-job recovery and log
+levels). My own manual testing with real phone videos found several issues, such as the progress bar
+sitting at 0% for short files and the worker contacting huggingface.co on every start; those were then
+fixed.
