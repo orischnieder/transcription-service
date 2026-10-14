@@ -65,6 +65,16 @@ class JobStore:
         }
         self._write(job_id, fields)
 
+    def processing_job_ids(self) -> list[str]:
+        """Ids of jobs in "processing". Scans all job hashes; meant for worker start-up only."""
+        ids = []
+        # _type="HASH" skips the `job:{id}:result` strings that also match the pattern.
+        for key in self._redis.scan_iter(match=job_key("*"), _type="HASH"):
+            status = self._redis.hget(key, "status")
+            if status == JobStatus.PROCESSING.encode():
+                ids.append(key.decode().removeprefix(job_key("")))
+        return ids
+
     def get_result(self, job_id: str) -> JobResult | None:
         data: bytes | None = self._redis.get(result_key(job_id))  # type: ignore[assignment]
         return JobResult.model_validate_json(data) if data else None

@@ -385,10 +385,9 @@ Format of each entry:
   with `transcription_failed` ("We could not transcribe this file."), or `transcription_timeout` when RQ's
   `JobTimeoutException` fires, and is logged with `logger.exception` (stack trace + `job_id` + `error_code`).
   The media file is deleted in a `finally` block on every path, including the skip.
-- The task does not re-raise: our job record is the source of truth for the UI, and RQ logs the job as OK.
-- Consequences / limitation: if the worker process dies mid-job (OOM kill, container stop during a job),
-  the job stays `processing` until its TTL expires and the media file may remain. Production fix: a small
-  reaper that marks stale `processing` jobs as failed, or RQ's abandoned-job handling feeding our store.
+- The task does not re-raise (approved by Ori): our job record is the source of truth for the UI. RQ
+  therefore treats every job as successful; see "RQ success log lines demoted to DEBUG".
+- A worker that dies mid-job is handled at the next start-up; see "Orphaned jobs failed at worker start".
 
 ## Progress reporting
 - Decision: `ProgressReporter` is the engine's `on_progress` callback. It writes `progress` to Redis at most
@@ -465,3 +464,47 @@ Format of each entry:
   faster-whisper decodes only the first audio stream (`container.decode(audio=0)`).
 - Consequences: a silent video with captions, or a video whose speech is on a second audio track, will
   produce no or the wrong transcript. To be listed under limitations in the README (Milestone 6).
+
+## Milestone 4 review decisions
+- Job expiry counted from the last change (TTL refreshed on every write): approved.
+- `.txt` download with one segment per line: approved.
+- The task keeps not re-raising: approved, with the two follow-ups below.
+
+## RQ success log lines demoted to DEBUG
+- Context: because the task records failures itself and returns normally, RQ logged
+  `Successfully completed ... job` and `transcription: Job OK (<id>)` at INFO for every job, including
+  failed transcriptions. A reader at 3am would see "Job OK" right after our "job failed".
+- Decision: the worker installs a `logging.Filter` (`DemoteRqSuccessLogs` in `app/worker.py`) on the
+  `rq.worker` logger. Records whose message contains "Job OK" or "Successfully completed" are re-labelled
+  DEBUG and dropped unless DEBUG is enabled. All other RQ lines (worker start, "Listening on", job pickup
+  with the job id) are unchanged. Our `job done` / `job failed` lines are the source of truth.
+- Alternatives: raise the `rq.worker` level to WARNING (also hides the useful start-up and job-pickup
+  lines); re-raise from the task so RQ's view matches ours (RQ would log a second stack trace and keep
+  failed-job records we do not use).
+- Consequences: matches on RQ's message text, so an RQ upgrade that rewords those lines would bring them
+  back at INFO (harmless, and covered by tests that use the current wording). Verified in Docker: after a
+  successful job, only `job started` / `job done` appear at INFO.
+
+## Orphaned jobs failed at worker start
+- Context: if the worker process dies mid-job (OOM kill, container killed, host restart), the job stays
+  `processing` forever (until its TTL) and its media file stays on the `uploads` volume. RQ moves its own
+  copy of the job to its failed registry but does not re-run it, and knows nothing about our job store.
+- Decision: at start-up, before loading the model and before taking new work, the worker calls
+  `fail_orphaned_jobs(store, upload_dir)`. It scans job hashes (`SCAN job:* TYPE hash`, which skips the
+  `job:{id}:result` strings), and for each job still in `processing`: marks it `failed` with
+  `worker_restarted` ("The transcription was interrupted because the server restarted. Please try
+  again."), deletes `{UPLOAD_DIR}/{job_id}.*`, and logs a WARNING with `job_id` and `error_code`. Running it
+  before the model load means users see the failure sooner, even if the model load is slow or failing.
+- Assumption: **a single worker.** With one worker, any job in `processing` at start-up cannot belong to a
+  live process. With several workers, a job in `processing` may be running on another worker, so this
+  would wrongly fail it; that setup needs a heartbeat per job (e.g. the worker refreshes a short-TTL key
+  `job:{id}:heartbeat` while processing, and only jobs whose heartbeat has expired are failed), or RQ's
+  own worker/job liveness data.
+- Alternatives: automatic retry (re-enqueue) of orphaned jobs (a file that crashes the worker, e.g. by
+  running out of memory, would crash it again in a loop); leave them to expire (UI polls a stuck job for
+  24 h).
+- Consequences: `SCAN` walks all keys once per worker start; fine for a single-node Redis holding at most
+  24 h of jobs. Verified in Docker: killed the worker (`SIGKILL`) at 3% of `physicsworks.wav`; the job
+  stayed `processing`; after `docker compose start worker` it became `failed` / `worker_restarted`, the
+  media file was gone, and `transcript.txt` returned `409`. Covered by tests (only `processing` jobs are
+  touched, queued jobs and their files are left alone, the warning is logged).

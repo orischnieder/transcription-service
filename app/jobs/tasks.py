@@ -99,6 +99,28 @@ def _transcribe(job: Job, media_path: Path, context: WorkerContext) -> None:
     )
 
 
+def fail_orphaned_jobs(store: JobStore, upload_dir: Path) -> None:
+    """Mark jobs left in "processing" by a worker that died mid-job as failed.
+
+    Call this at worker start-up, before taking new work. It assumes a single worker: with
+    several workers, a job in "processing" may belong to another live worker, so each job would
+    need a heartbeat to tell live jobs from orphans.
+    """
+    for job_id in store.processing_job_ids():
+        store.mark_failed(
+            job_id,
+            "worker_restarted",
+            "The transcription was interrupted because the server restarted. Please try again.",
+            datetime.now(UTC),
+        )
+        # The stored file is `{job_id}.{ext}`; job ids are hex, so the pattern cannot match others.
+        for media_path in upload_dir.glob(f"{job_id}.*"):
+            media_path.unlink(missing_ok=True)
+        logger.warning(
+            "orphaned job marked failed", extra={"job_id": job_id, "error_code": "worker_restarted"}
+        )
+
+
 def _describe_failure(exc: Exception) -> tuple[str, str]:
     """Map an exception to the error code and user-facing message stored on the job."""
     if isinstance(exc, JobTimeoutException):
