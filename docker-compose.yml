@@ -1,0 +1,58 @@
+x-app: &app
+  build:
+    context: .
+    target: runtime
+  image: transcription-service:runtime
+  env_file:
+    - path: .env
+      required: false
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/data/uploads
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    volumes:
+      - uploads:/data/uploads
+      - models:/models
+    restart: unless-stopped
+
+  tests:
+    build:
+      context: .
+      target: dev
+    image: transcription-service:dev
+    profiles: ["test"]
+    environment:
+      ENGINE: fake
+
+volumes:
+  uploads:
+  models:
