@@ -108,7 +108,7 @@ All JSON errors use one shape:
 |---|---|---|
 | `GET /` | UI page | |
 | `GET /health` | `200 {"status":"ok","redis":"ok"}` | `503` if Redis is unreachable |
-| `GET /api/limits` | `200` allowed extensions, max size MB, max duration sec (UI uses it for client-side checks) | |
+| `GET /api/limits` | `200` allowed extensions, max size MB, max duration sec, supported language codes (UI uses it for client-side checks and the language list) | |
 | `POST /api/jobs` (multipart: `file`, optional `language`) | `202` job object + `Location` header | `400 empty_file`, `413 file_too_large`, `415 unsupported_file_type`, `422 invalid_media` (unreadable / no audio stream), `422 media_too_long`, `422 invalid_language`, `503 queue_unavailable` |
 | `GET /api/jobs/{id}` | `200` job object; includes `result` when `done` | `404 job_not_found` |
 | `GET /api/jobs/{id}/transcript.txt` | `200 text/plain` attachment | `404 job_not_found`, `409 job_not_ready` |

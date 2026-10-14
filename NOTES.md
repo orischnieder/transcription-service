@@ -508,3 +508,86 @@ Format of each entry:
   stayed `processing`; after `docker compose start worker` it became `failed` / `worker_restarted`, the
   media file was gone, and `transcript.txt` returned `409`. Covered by tests (only `processing` jobs are
   touched, queued jobs and their files are left alone, the warning is logged).
+
+## UI: single static page, vanilla HTML/CSS/JS
+- Context: a small, friendly page that works offline / air-gapped, with no build step (decision in
+  CLAUDE.md).
+- Decision: `app/static/index.html`, `styles.css`, `app.js`, served by FastAPI (`GET /` returns the page,
+  `/static` is a `StaticFiles` mount; `static/*` is declared as package data). Four views on one page:
+  choose a file → progress → result, plus an error view. Upload uses `XMLHttpRequest` (the Fetch API
+  cannot report upload progress); job status uses `fetch`, polled every 1.5 s. All server text is inserted
+  with `textContent`, never `innerHTML`, so a filename or transcript cannot inject markup.
+- Alternatives: a framework (React/Vue) with a build step (overkill for four views); server-rendered
+  templates (needs a page reload per state change).
+- Consequences: about 450 lines of JS, 400 of CSS and 110 of HTML that anyone can read without tooling. A test asserts the page and
+  stylesheet reference no external URLs.
+
+## UI design
+- Direction: an "editorial transcript sheet" (warm paper background, ink text, one vermilion accent, serif
+  display type and transcript, monospace timestamps and labels), with a matching dark theme via
+  `prefers-color-scheme`. Fonts are local stacks only (Iowan Old Style / Palatino / Georgia for serif,
+  system sans for controls, `ui-monospace` for timestamps), because external assets are not allowed. The
+  paper grain is an inline SVG data URI. Accent colours were chosen for contrast (≈6:1 light, ≈7:1 dark
+  against the background).
+- Motion is limited to a short fade on view changes and the queued-state sweep, and is disabled under
+  `prefers-reduced-motion`.
+
+## UI behaviour
+- Before upload: drag-and-drop zone plus a "Choose a file" button (the file input is visually hidden; the
+  button opens it, so it is a normal keyboard-focusable control). Accepted formats ("Audio or video: …"),
+  max size (shown as "1 GB") and max length ("60 minutes") come from `/api/limits`. The file input's
+  `accept` list is set from the same response. Client-side checks for extension, empty file and size run
+  before any upload; the server repeats every check. If `/api/limits` fails, the page still works and the
+  server decides.
+- Language: "Detect automatically" by default, plus the 99 supported languages. `/api/limits` now also
+  returns `languages` (one source of truth), and the browser names them with `Intl.DisplayNames`
+  (Whisper's `jw` is shown as Javanese via its standard code `jv`).
+- Progress: four stages (Uploading → Queued → Transcribing → Done) with the current one marked
+  (`aria-current="step"`). Uploading shows the XHR upload percentage; Queued shows an indeterminate bar;
+  Transcribing shows the job's percentage and the elapsed time since transcription started (client clock,
+  `m:ss`). Stage changes are announced through an `aria-live` region; percentages are not, to avoid
+  flooding screen readers.
+- Result: file name, duration, detected language and segment count; transcript with a timestamp per
+  segment; "Copy text" (one segment per line, same as the `.txt`), "Download .txt", "Download .srt",
+  "Transcribe another file". Each segment is its own `<p dir="auto">`, so Hebrew and Arabic lines are
+  laid out right-to-left and right-aligned while English lines in the same transcript stay left-to-right.
+  An empty transcript shows "No speech was found in this file."
+- Copy: tries the Clipboard API, and falls back to a hidden textarea + `execCommand("copy")` both when
+  the API is missing (plain HTTP) and when permission is denied (found while testing: the embedded test
+  browser denies clipboard-write).
+- Errors: every code the API returns, plus `network`, maps to a short plain-language message
+  (`ERROR_MESSAGES` in `app.js`; sizes and lengths filled in from `/api/limits`). Unknown codes fall back
+  to the server's message. "Try again" returns to the start: for file problems (`unsupported_file_type`,
+  `empty_file`, `file_too_large`, `invalid_media`, `media_too_long`) the file is cleared and focus goes to
+  "Choose a file"; for transient problems (`queue_unavailable`, `network`, `worker_restarted`,
+  `transcription_failed`, `transcription_timeout`, …) the file stays selected and focus goes to
+  "Transcribe", so retrying is one key press. Polling tolerates up to 3 consecutive network errors before
+  showing the network message.
+- Accessibility: every view change moves focus to that view's heading; visible focus ring
+  (`:focus-visible`); all controls are buttons/links/selects at least 44 px tall; labels on form
+  controls; the error card uses `role="alert"`.
+- Narrow screens: single column at 375 px; stages wrap to two rows; timestamps move above their text;
+  action buttons stack full-width. Verified no horizontal scrolling on the select and result views.
+
+## Manual UI test checklist (Milestone 5)
+Run with `docker compose up --build` and the real `faster-whisper-small` model, in the desktop app's
+browser pane (Chromium). Files were given to the page's file input from a script, because the test
+browser cannot drive the OS file dialog.
+
+| Check | Result |
+|---|---|
+| Valid audio (`physicsworks.wav`, 3:23) | Uploading → Transcribing with % and elapsed time (e.g. 28%, 0:15) → result with 47 timestamped segments, "English", downloads work |
+| Valid video (MP4/WebM with speech) | Same pipeline as audio, verified end to end in the video milestone; UI shows the same result view |
+| Wrong type (`notes.txt`) | Rejected in the browser before upload: "This file type isn't supported. Choose an audio or video file (aac, …)." |
+| Too large | Checked in the browser against `max_upload_mb` before upload; server-side 413 (both the early Content-Length check and the byte count) covered by tests and curl |
+| Empty file | Rejected in the browser: "This file is empty. …" |
+| Unreadable media (`fake.mp3`) | Server `invalid_media`: "We couldn't find any sound in this file. …" |
+| Too long (61-minute Opus) | Server `media_too_long`: "This recording is longer than 60 minutes. …" |
+| Server error: Redis stopped | `queue_unavailable`: "The service is busy or temporarily unavailable. …"; file kept for retry |
+| Server error: API stopped | `network`: "We couldn't reach the server. …" |
+| Job failures (`worker_restarted`, `transcription_timeout`, `transcription_failed`) | Correct message each; "Try again" keeps the file and focuses "Transcribe" (poll response simulated) |
+| Hebrew / Arabic transcript | Segments get `direction: rtl`, right-aligned; mixed English line stays `ltr` (result simulated) |
+| Copy text | "Copied to clipboard." (after the fallback fix) |
+| Narrow screen (375 × 812) | Single column, no horizontal scroll, buttons full-width |
+| Keyboard only | Tab order: Choose a file → Spoken language → Transcribe; Enter starts; focus moves to each view's heading; visible focus ring |
+| Dark mode | Readable contrast, same layout |

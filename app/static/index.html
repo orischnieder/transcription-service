@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Transcribe</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <p class="eyebrow">Speech to text</p>
+      <h1>Transcribe</h1>
+      <p class="lede">Turn an audio or video file into text you can read, copy and download.</p>
+    </header>
+
+    <!-- 1. Choose a file -->
+    <section id="view-select" class="view" aria-labelledby="select-title">
+      <h2 id="select-title" class="visually-hidden" tabindex="-1">Choose a file</h2>
+
+      <div id="dropzone" class="dropzone">
+        <p class="dropzone-title">Drop an audio or video file here</p>
+        <p class="dropzone-or">or</p>
+        <button type="button" id="choose" class="button">Choose a file</button>
+        <input type="file" id="file-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
+      </div>
+
+      <dl id="limits" class="limits" aria-label="What you can upload">
+        <div><dt>Formats</dt><dd id="limit-formats">Audio or video</dd></div>
+        <div><dt>Max size</dt><dd id="limit-size">…</dd></div>
+        <div><dt>Max length</dt><dd id="limit-duration">…</dd></div>
+      </dl>
+
+      <div class="options">
+        <label for="language">Spoken language</label>
+        <select id="language">
+          <option value="">Detect automatically</option>
+        </select>
+      </div>
+
+      <div id="selected" class="selected" hidden>
+        <p class="selected-file">
+          <span class="selected-label">Selected</span>
+          <span id="selected-name" class="selected-name" dir="auto"></span>
+          <span id="selected-size" class="meta"></span>
+        </p>
+        <button type="button" id="start" class="button primary">Transcribe</button>
+      </div>
+    </section>
+
+    <!-- 2. Progress -->
+    <section id="view-progress" class="view" aria-labelledby="progress-title" hidden>
+      <h2 id="progress-title" class="file-title" tabindex="-1" dir="auto"></h2>
+
+      <ol class="stages" aria-label="Progress">
+        <li data-stage="uploading">Uploading</li>
+        <li data-stage="queued">Queued</li>
+        <li data-stage="processing">Transcribing</li>
+        <li data-stage="done">Done</li>
+      </ol>
+
+      <div class="readout">
+        <span id="percent" class="percent">0%</span>
+        <span class="readout-text">
+          <span id="stage-label">Uploading</span>
+          <span id="elapsed" class="meta"></span>
+        </span>
+      </div>
+      <div class="meter">
+        <div id="meter-bar" class="meter-bar" role="progressbar" aria-labelledby="stage-label"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+      </div>
+      <p id="stage-hint" class="hint"></p>
+      <p id="status-live" class="visually-hidden" aria-live="polite"></p>
+    </section>
+
+    <!-- 3. Result -->
+    <section id="view-result" class="view" aria-labelledby="result-title" hidden>
+      <div class="result-head">
+        <h2 id="result-title" class="file-title" tabindex="-1" dir="auto"></h2>
+        <p id="result-meta" class="meta"></p>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="copy" class="button">Copy text</button>
+        <a id="download-txt" class="button" href="#" download>Download .txt</a>
+        <a id="download-srt" class="button" href="#" download>Download .srt</a>
+        <button type="button" id="another" class="button primary">Transcribe another file</button>
+      </div>
+      <p id="copy-status" class="copy-status" aria-live="polite"></p>
+
+      <p id="empty-transcript" class="hint" hidden>No speech was found in this file.</p>
+      <ol id="transcript" class="transcript" aria-label="Transcript"></ol>
+    </section>
+
+    <!-- 4. Error -->
+    <section id="view-error" class="view" aria-labelledby="error-title" hidden>
+      <div class="error-card" role="alert">
+        <h2 id="error-title" tabindex="-1">That didn't work</h2>
+        <p id="error-message"></p>
+      </div>
+      <button type="button" id="retry" class="button primary">Try again</button>
+    </section>
+  </main>
+</body>
+</html>

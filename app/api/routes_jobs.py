@@ -10,6 +10,7 @@ from app.formats.srt import to_srt
 from app.formats.txt import to_text
 from app.jobs.models import Job, JobStatus
 from app.services.jobs import get_finished_result, get_job, submit_job
+from app.services.languages import SUPPORTED_LANGUAGES
 from app.services.uploads import ALLOWED_EXTENSIONS
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -25,6 +26,7 @@ def get_limits(settings: SettingsDep) -> LimitsResponse:
         allowed_extensions=sorted(ALLOWED_EXTENSIONS),
         max_upload_mb=settings.max_upload_mb,
         max_duration_sec=settings.max_duration_sec,
+        languages=sorted(SUPPORTED_LANGUAGES),
     )
 
 

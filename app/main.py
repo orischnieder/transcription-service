@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 from redis import Redis
 
-from app.api import routes_health, routes_jobs
+from app.api import routes_health, routes_jobs, routes_ui
 from app.api.errors import error_response, register_error_handlers
 from app.config import Settings, get_settings
 from app.logging_config import configure_logging
@@ -50,6 +51,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.middleware("http")(log_requests)
     app.include_router(routes_health.router)
     app.include_router(routes_jobs.router)
+    app.include_router(routes_ui.router)
+    app.mount("/static", StaticFiles(directory=routes_ui.STATIC_DIR), name="static")
     return app
 
 

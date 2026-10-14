@@ -162,6 +162,8 @@ def test_limits(client: TestClient) -> None:
     assert limits["max_duration_sec"] == 60
     assert "mp3" in limits["allowed_extensions"]
     assert limits["allowed_extensions"] == sorted(limits["allowed_extensions"])
+    assert "he" in limits["languages"]
+    assert "en" in limits["languages"]
 
 
 def test_valid_upload_is_enqueued(

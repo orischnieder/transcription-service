@@ -27,3 +27,4 @@ class LimitsResponse(BaseModel):
     allowed_extensions: list[str]
     max_upload_mb: int
     max_duration_sec: int
+    languages: list[str]  # codes accepted for `language`; empty means auto-detect
