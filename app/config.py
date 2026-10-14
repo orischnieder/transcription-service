@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8"
     whisper_vad: bool = True
 
-    max_upload_mb: int = Field(default=200, gt=0)
+    # Sized for video (far larger than audio of the same length); duration is capped separately.
+    max_upload_mb: int = Field(default=1024, gt=0)
     max_duration_sec: int = Field(default=3600, gt=0)
 
     redis_url: str = "redis://redis:6379/0"

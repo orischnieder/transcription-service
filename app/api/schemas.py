@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.jobs.models import Job, JobResult
+
 
 class ErrorDetail(BaseModel):
     code: str
@@ -15,6 +17,10 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     redis: Literal["ok"]
+
+
+class JobResponse(Job):
+    result: JobResult | None = None  # present only when status is "done"
 
 
 class LimitsResponse(BaseModel):

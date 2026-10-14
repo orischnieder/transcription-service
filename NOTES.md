@@ -250,10 +250,27 @@ Format of each entry:
   oversized upload is rejected without being copied into `UPLOAD_DIR`, but the bytes have still crossed the
   network and briefly occupied `/tmp`.
 - Alternatives: a custom streaming multipart parser over `request.stream()` (true early abort, but more code
-  and no `/docs` form); a cheap `Content-Length` pre-check (clients can omit or lie about it).
+  and no `/docs` form).
 - Consequences: in production the hard limit belongs at the reverse proxy (e.g. nginx
   `client_max_body_size`), which rejects oversized bodies before they reach the app. The UI (Milestone 5)
-  also checks the size before uploading.
+  also checks the size before uploading. Since Milestone 4 an early `Content-Length` check closes most of
+  the gap (next entry).
+
+## Early Content-Length check for uploads
+- Context: the chunked-copy limit only runs after Starlette has received the whole body (previous entry).
+  Ori decided to add a cheap early rejection as well, keeping the chunked check and the reverse-proxy note.
+- Decision: an HTTP middleware (`upload_size_guard` in `app/main.py`) inspects `POST /api/jobs` only. If
+  `Content-Length` is larger than `MAX_UPLOAD_MB` + 64 KiB (allowance for multipart boundaries, part headers
+  and the `language` field), it returns `413 file_too_large` (same code and message as the chunked check)
+  without reading the body. A missing or non-numeric header (including non-ASCII digits such as `²`, which
+  `str.isdigit()` accepts but `int()` rejects) falls through to the existing checks. Request logging wraps
+  this middleware, so rejected uploads are logged like any other request.
+- Alternatives: only the reverse proxy (not present in local/Docker setup); the custom streaming parser.
+- Consequences: honest clients (browsers, curl) are rejected immediately. Measured with curl and a 210 MB
+  file: `413` in 18 ms with 0 bytes sent, because curl sends `Expect: 100-continue` and uvicorn answers
+  before asking for the body. A client that omits or understates `Content-Length` still gets the
+  authoritative chunked check. The 64 KiB allowance means a file up to ~64 KiB over the limit passes this
+  check and is then rejected by the chunked copy.
 
 ## Validation order and file handling
 - Context: reject bad input as cheaply and early as possible, and never keep rejected files.
@@ -321,3 +338,130 @@ Format of each entry:
   `language=xx` → `422 invalid_language`; unknown job → `404`; `/docs` → `200`. Only the three accepted
   files remained in the `uploads` volume (removed afterwards, since nothing processes them until
   Milestone 4).
+
+## rq dependency
+- Context: jobs must run outside the API process (decision: Redis + RQ, `SimpleWorker`).
+- Decision: `rq==2.12.0` (BSD-2-Clause). RQ ships type hints (`py.typed`), so no mypy override is needed.
+- Alternatives: Celery (more features, much heavier to configure); Arq (asyncio-based, but transcription is
+  CPU-bound sync work); a hand-written Redis list consumer (reinvents timeouts and failure handling).
+- Consequences: RQ's own log lines (`rq.worker`) go through our root handler and formatter, because RQ only
+  installs its own handler when the logger has no effective handler.
+
+## Enqueue by import path, same id in RQ and in the job store
+- Context: the API must never import the engine or the worker task.
+- Decision: `JobQueue.enqueue(job_id, media_path)` calls `enqueue_call("app.jobs.tasks.run_transcription",
+  ...)` with a string path, `job_id` set to our job id, `timeout=JOB_TIMEOUT_SEC`, `result_ttl=0` (the task
+  stores its own result) and `failure_ttl` = job TTL. The stored media path is passed as an argument, so the
+  worker never has to rebuild it from the filename.
+- Alternatives: pass the function object (imports `app.jobs.tasks` and RQ-side code into the API).
+- Consequences: a typo in the path would only fail in the worker; a unit test asserts the enqueued
+  function name.
+
+## Submission order: record, enqueue, clean up on failure
+- Context: the worker must always find the job it is handed, and a failed submission must not leave files
+  or records behind.
+- Decision: `submit_job` stores the job, then enqueues. On `RedisError` in either step it deletes the media
+  file, makes a best-effort delete of the job record (ignored if Redis is down; the record would expire
+  anyway) and returns `503 queue_unavailable`.
+- Alternatives: enqueue first (the worker could start before the record exists).
+- Consequences: covered by tests (file and keys removed when enqueue fails).
+
+## Worker context: engine loaded once, task as a thin entry point
+- Context: `SimpleWorker` runs jobs in its own process, so a model loaded at start can be reused.
+- Decision: `python -m app.worker` loads settings and logging, builds the engine through the factory
+  (model loaded once), stores a `WorkerContext(engine, store, model_name)` in `app.jobs.tasks`, then runs
+  `SimpleWorker` on the `transcription` queue. `run_transcription(job_id, media_path)` is the RQ entry point;
+  all the logic is in `process_job(job_id, media_path, context)`, which tests call directly with
+  `FakeEngine` and `fakeredis`.
+- Alternatives: load the model inside the task (reloads per job); a custom RQ `Worker` subclass holding the
+  engine (more RQ internals to understand).
+- Consequences: one module-level variable, set once at start. The worker's Redis client has no socket
+  timeout because it blocks while waiting for jobs.
+
+## Task behaviour and error codes
+- Decision: `process_job` reads the job (missing → log a warning and skip, e.g. expired while queued), marks
+  it `processing` (`started_at`, progress 0), transcribes with a progress reporter, then stores the result
+  and marks `done` (progress 100, `language_detected`, `finished_at`). Any exception marks the job `failed`
+  with `transcription_failed` ("We could not transcribe this file."), or `transcription_timeout` when RQ's
+  `JobTimeoutException` fires, and is logged with `logger.exception` (stack trace + `job_id` + `error_code`).
+  The media file is deleted in a `finally` block on every path, including the skip.
+- The task does not re-raise: our job record is the source of truth for the UI, and RQ logs the job as OK.
+- Consequences / limitation: if the worker process dies mid-job (OOM kill, container stop during a job),
+  the job stays `processing` until its TTL expires and the media file may remain. Production fix: a small
+  reaper that marks stale `processing` jobs as failed, or RQ's abandoned-job handling feeding our store.
+
+## Progress reporting
+- Decision: `ProgressReporter` is the engine's `on_progress` callback. It writes `progress` to Redis at most
+  once per second (`PROGRESS_INTERVAL_SEC`), caps it at 99 while processing (100 only appears with `done`,
+  so the UI never shows "100%" while still working), and logs the 25/50/75% milestones once each. The
+  clock is injectable, so throttling is tested without sleeping.
+- Observed (physicsworks.wav, small, VAD on): polled every 1.5 s, the API showed queued 0 → processing 0 →
+  3 → 15 → 45 → done 100 over ~35 s. Progress advances per decoded segment, so it moves in steps.
+
+## TTL refreshed on every write
+- Context: `HSET` on a key that has already expired creates a new key without a TTL, which would leak.
+- Decision: every `JobStore` write (`create`, `mark_processing`, `set_progress`, `mark_done`, `mark_failed`)
+  runs `HSET` + `EXPIRE` in one `MULTI/EXEC`. The result (`job:{id}:result`, JSON) is written in the same
+  transaction as `done`, with the same TTL.
+- Consequences: a job and its result are kept for `JOB_TTL_HOURS` after the last change, i.e. 24 h after it
+  finished rather than 24 h after upload. Both keys expire together.
+
+## Job response and downloads
+- Decision: `GET /api/jobs/{id}` returns `JobResponse` (the `Job` fields plus `result`, set only when
+  `done`). `transcript.txt` is one segment per line (`text/plain; charset=utf-8`); `transcript.srt` uses
+  `HH:MM:SS,mmm` timestamps rounded to the millisecond (`application/x-subrip; charset=utf-8`). Both are
+  attachments named after the uploaded file (`talk.mp3` → `talk.txt`), with an ASCII fallback name and the
+  exact UTF-8 name in `filename*` (RFC 6266/5987), so non-ASCII filenames work and header injection is not
+  possible. Not ready → `409 job_not_ready` (separate message for failed jobs); unknown or expired →
+  `404 job_not_found`.
+- Alternatives: `.txt` as one paragraph (`result.text`); harder to read for long recordings.
+- Consequences: the full `result.text` (single paragraph) is still available in the JSON for the UI.
+
+## Manual end-to-end check (Milestone 4)
+- `docker compose up --build` (real `faster-whisper-small`, VAD on). Worker log: model loaded in 1.5 s, then
+  `worker ready`. Uploaded `jfk.flac` and `physicsworks.wav` with curl: both returned `202` immediately
+  (`queued`), `transcript.txt` returned `409` while processing, both finished `done` (jfk: 3.9 s, RTF 0.36;
+  physicsworks: 31.1 s, RTF 0.15, 47 segments, language `en`). `.txt`/`.srt` downloads returned the
+  expected content and headers. The `uploads` volume was empty afterwards. Worker logs showed
+  `job started` → `job progress` 25/50/75 → `job done` with `job_id` on every line. The tests also pass in
+  the Docker test image (85 passed, including the real-ffprobe tests).
+
+## Video is a first-class input
+- Context: the task asks for a "media file"; users will upload screen recordings, meetings and lectures as
+  video, not only audio.
+- Decision: video containers (`mp4`, `mov`, `mkv`, `webm`) are accepted alongside audio formats, validated
+  the same way (ffprobe must find an audio stream), and decoded directly by faster-whisper (PyAV reads only
+  the audio stream; no separate extraction step). User-facing messages say "audio or video" (e.g. "Please
+  upload an audio or video file.", "The audio or video is longer than the 60 minute limit.", "We could not
+  read this audio or video file. It may be damaged or have no sound track.").
+- Verified end to end with the real model: `jfk.flac` packaged as MP4 (H.264 + AAC) and WebM (VP9 + Opus)
+  with a video track; both finished `done` with the correct transcript (3.8-3.9 s each, same as the audio
+  file), downloads named `jfk_video.srt`, media files deleted afterwards. A video without an audio track is
+  rejected with `422 invalid_media`.
+- Consequences: the worker reads the whole video file to demux its audio, so very large videos cost some
+  extra disk I/O compared with an audio-only upload of the same length; decoding time is dominated by the
+  model either way.
+
+## Upload size limit raised to 1024 MB
+- Context: the original default of 200 MB fits an hour of audio easily (a 1-hour MP3 at 128 kbit/s is
+  ~58 MB) but not typical video: at 2-8 Mbit/s, one hour of video is roughly 0.9-3.6 GB.
+- Decision: default `MAX_UPLOAD_MB=1024`. The size limit only protects disk and bandwidth; the work the
+  service does is bounded by `MAX_DURATION_SEC` (default 60 minutes), because transcription time depends on
+  audio length, not file size.
+- Alternatives: keep 200 MB (rejects most real video over a few minutes); a much higher limit such as
+  4 GB (covers HD hour-long video, but a single upload could fill a small disk and Starlette may spool it
+  to `/tmp` when `Content-Length` is missing).
+- Consequences: a 1080p recording near the 60-minute limit can still exceed 1 GB; such users get a clear
+  `413` and can raise `MAX_UPLOAD_MB` or upload just the audio. With larger uploads the early
+  `Content-Length` check and a reverse-proxy limit matter more, and the `uploads` volume needs room for
+  several concurrent uploads (each file is deleted once its job finishes). Production improvement: extract
+  the audio track client-side or in the API to store far less.
+
+## Assumption: speech from the audio track only
+- Context: a video may contain information that is not spoken: on-screen text, slides, subtitles burned
+  into the picture, or embedded subtitle streams.
+- Decision: we transcribe speech from the audio track only. On-screen text (OCR), burned-in or embedded
+  subtitle streams and other visual content are out of scope. If a file has several audio tracks,
+  faster-whisper decodes only the first audio stream (`container.decode(audio=0)`).
+- Consequences: a silent video with captions, or a video whose speech is on a second audio track, will
+  produce no or the wrong transcript. To be listed under limitations in the README (Milestone 6).

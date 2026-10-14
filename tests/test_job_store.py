@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 
 import fakeredis
 
-from app.jobs.models import Job, JobStatus
-from app.jobs.store import JobStore, job_key
+from app.jobs.models import Job, JobResult, JobStatus, SegmentResult
+from app.jobs.store import JobStore, job_key, result_key
 
 TTL_SEC = 3600
 
@@ -45,3 +45,51 @@ def test_unset_fields_are_not_stored() -> None:
 
 def test_get_unknown_job_returns_none() -> None:
     assert JobStore(fakeredis.FakeRedis(), ttl_sec=TTL_SEC).get("missing") is None
+
+
+def test_mark_done_stores_result_and_refreshes_ttl() -> None:
+    redis = fakeredis.FakeRedis()
+    store = JobStore(redis, ttl_sec=TTL_SEC)
+    store.create(make_job())
+    redis.expire(job_key("abc123"), 10)  # pretend most of the TTL has passed
+    result = JobResult(
+        text="Hi.",
+        language="en",
+        duration_sec=1.0,
+        segments=[SegmentResult(start=0, end=1, text="Hi.")],
+    )
+
+    store.mark_done("abc123", result, datetime(2026, 1, 2, 3, 5, tzinfo=UTC))
+
+    job = store.get("abc123")
+    assert job is not None
+    assert (job.status, job.progress, job.language_detected) == (JobStatus.DONE, 100, "en")
+    assert store.get_result("abc123") == result
+    assert redis.ttl(job_key("abc123")) > 10
+    assert 0 < redis.ttl(result_key("abc123")) <= TTL_SEC
+
+
+def test_mark_failed_records_error() -> None:
+    store = JobStore(fakeredis.FakeRedis(), ttl_sec=TTL_SEC)
+    store.create(make_job())
+
+    store.mark_failed("abc123", "transcription_failed", "Nope.", datetime(2026, 1, 2, tzinfo=UTC))
+
+    job = store.get("abc123")
+    assert job is not None
+    assert (job.status, job.error_code, job.error_message) == (
+        JobStatus.FAILED,
+        "transcription_failed",
+        "Nope.",
+    )
+    assert store.get_result("abc123") is None
+
+
+def test_delete_removes_job_and_result() -> None:
+    redis = fakeredis.FakeRedis()
+    store = JobStore(redis, ttl_sec=TTL_SEC)
+    store.create(make_job())
+
+    store.delete("abc123")
+
+    assert redis.keys("job:*") == []

@@ -4,6 +4,7 @@ from fastapi import Depends, Request
 from redis import Redis
 
 from app.config import Settings
+from app.jobs.queue import JobQueue
 from app.jobs.store import JobStore
 from app.services.media_probe import FfprobeMediaProbe, MediaProbe
 
@@ -28,9 +29,18 @@ def get_job_store(redis: RedisDep, settings: SettingsDep) -> JobStore:
     return JobStore(redis, ttl_sec=settings.job_ttl_hours * 3600)
 
 
+def get_job_queue(redis: RedisDep, settings: SettingsDep) -> JobQueue:
+    return JobQueue(
+        redis,
+        job_timeout_sec=settings.job_timeout_sec,
+        failure_ttl_sec=settings.job_ttl_hours * 3600,
+    )
+
+
 def get_media_probe() -> MediaProbe:
     return FfprobeMediaProbe()
 
 
 JobStoreDep = Annotated[JobStore, Depends(get_job_store)]
+JobQueueDep = Annotated[JobQueue, Depends(get_job_queue)]
 MediaProbeDep = Annotated[MediaProbe, Depends(get_media_probe)]

@@ -1,15 +1,19 @@
-"""Worker entrypoint.
+"""Worker entrypoint: `python -m app.worker`.
 
-Milestone 1 placeholder: it starts, logs, and idles until it is asked to stop, so the
-`worker` service can already run under Docker Compose. The RQ worker arrives in Milestone 4.
+Loads the transcription engine once, then processes jobs from the RQ queue with a SimpleWorker
+(jobs run in this process, no fork per job), so the model is never reloaded between jobs.
 """
 
 import logging
-import signal
-import threading
-from types import FrameType
 
-from app.config import get_settings
+from redis import Redis
+from rq import Queue, SimpleWorker
+
+from app.config import Settings, get_settings
+from app.engines.factory import create_engine
+from app.jobs import tasks
+from app.jobs.queue import QUEUE_NAME
+from app.jobs.store import JobStore
 from app.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -19,18 +23,24 @@ def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_format)
 
-    stop = threading.Event()
+    # No socket timeout: the worker blocks on Redis while waiting for jobs.
+    redis = Redis.from_url(settings.redis_url)
+    model_name = _model_name(settings)
+    engine = create_engine(settings)
+    tasks.configure(
+        tasks.WorkerContext(
+            engine=engine,
+            store=JobStore(redis, ttl_sec=settings.job_ttl_hours * 3600),
+            model_name=model_name,
+        )
+    )
 
-    def request_stop(signum: int, _frame: FrameType | None) -> None:
-        logger.info("worker stopping", extra={"signal": signal.Signals(signum).name})
-        stop.set()
+    logger.info("worker ready", extra={"queue": QUEUE_NAME, "model": model_name})
+    SimpleWorker([Queue(QUEUE_NAME, connection=redis)], connection=redis).work()
 
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
 
-    logger.info("worker started (placeholder, no jobs processed yet)")
-    stop.wait()
-    logger.info("worker stopped")
+def _model_name(settings: Settings) -> str:
+    return settings.whisper_model if settings.engine == "faster-whisper" else settings.engine
 
 
 if __name__ == "__main__":

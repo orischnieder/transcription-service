@@ -4,10 +4,11 @@ import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.config import Settings
 from app.services.media_probe import MediaProbeError
-from tests.conftest import FakeMediaProbe
+from tests.conftest import FakeJobQueue, FakeMediaProbe
 
 AUDIO_BYTES = b"fake audio content"
 
@@ -57,12 +58,17 @@ def test_created_job_can_be_fetched(client: TestClient) -> None:
     response = client.get(f"/api/jobs/{job['id']}")
 
     assert response.status_code == 200
-    assert response.json() == job
+    assert response.json() == {**job, "result": None}
 
 
 def test_language_is_normalized(client: TestClient) -> None:
     assert upload(client, language=" EN ").json()["language_requested"] == "en"
     assert upload(client, language="auto").json()["language_requested"] is None
+
+
+@pytest.mark.parametrize("filename", ["lecture.mp4", "clip.MOV", "talk.mkv", "call.webm"])
+def test_video_files_are_accepted(client: TestClient, filename: str) -> None:
+    assert upload(client, filename=filename).status_code == 202
 
 
 def test_extension_check_is_case_insensitive(client: TestClient) -> None:
@@ -156,3 +162,76 @@ def test_limits(client: TestClient) -> None:
     assert limits["max_duration_sec"] == 60
     assert "mp3" in limits["allowed_extensions"]
     assert limits["allowed_extensions"] == sorted(limits["allowed_extensions"])
+
+
+def test_valid_upload_is_enqueued(
+    client: TestClient, settings: Settings, job_queue: FakeJobQueue
+) -> None:
+    job = upload(client).json()
+
+    assert job_queue.enqueued == [(job["id"], settings.upload_dir / f"{job['id']}.mp3")]
+
+
+def test_enqueue_failure_returns_503_and_cleans_up(
+    client: TestClient,
+    settings: Settings,
+    job_queue: FakeJobQueue,
+    fake_redis: fakeredis.FakeRedis,
+) -> None:
+    job_queue.error = RedisConnectionError("redis down")
+
+    response = upload(client)
+
+    assert_error(response, 503, "queue_unavailable")
+    assert stored_files(settings) == []
+    assert fake_redis.keys("job:*") == []  # the job record created before enqueue was removed
+
+
+def test_transcript_of_queued_job_returns_409(client: TestClient) -> None:
+    job = upload(client).json()
+
+    assert_error(client.get(f"/api/jobs/{job['id']}/transcript.txt"), 409, "job_not_ready")
+    assert_error(client.get(f"/api/jobs/{job['id']}/transcript.srt"), 409, "job_not_ready")
+
+
+@pytest.mark.parametrize("fmt", ["txt", "srt"])
+def test_transcript_of_unknown_job_returns_404(client: TestClient, fmt: str) -> None:
+    assert_error(client.get(f"/api/jobs/nope/transcript.{fmt}"), 404, "job_not_found")
+
+
+# Early Content-Length check
+
+
+def test_declared_size_over_limit_is_rejected_before_reading(
+    client: TestClient, settings: Settings, job_queue: FakeJobQueue
+) -> None:
+    declared = settings.max_upload_mb * 1024 * 1024 + 64 * 1024 + 1
+    response = client.post(
+        "/api/jobs",
+        files={"file": ("talk.mp3", AUDIO_BYTES)},
+        headers={"Content-Length": str(declared)},
+    )
+
+    assert_error(response, 413, "file_too_large")
+    assert stored_files(settings) == []
+    assert job_queue.enqueued == []
+
+
+# Raw bytes: a header is latin-1 on the wire, so "²" (0xB2) can arrive; str.isdigit() accepts it.
+@pytest.mark.parametrize("content_length", [b"not-a-number", b"-5", "²".encode("latin-1")])
+def test_invalid_content_length_falls_through_to_upload_checks(
+    client: TestClient, content_length: bytes
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        files={"file": ("talk.mp3", AUDIO_BYTES)},
+        headers={"Content-Length": content_length},
+    )
+
+    assert response.status_code == 202
+
+
+def test_size_guard_only_applies_to_uploads(client: TestClient) -> None:
+    response = client.get("/api/limits", headers={"Content-Length": str(10**12)})
+
+    assert response.status_code == 200

@@ -25,3 +25,16 @@ class Job(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class SegmentResult(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
+class JobResult(BaseModel):
+    text: str
+    language: str
+    duration_sec: float
+    segments: list[SegmentResult]

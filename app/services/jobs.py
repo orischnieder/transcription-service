@@ -1,5 +1,7 @@
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
 
@@ -7,7 +9,8 @@ from redis.exceptions import RedisError
 
 from app.api.errors import AppError
 from app.config import Settings
-from app.jobs.models import Job, JobStatus
+from app.jobs.models import Job, JobResult, JobStatus
+from app.jobs.queue import JobQueue
 from app.jobs.store import JobStore
 from app.services.languages import normalize_language
 from app.services.media_probe import MediaProbe
@@ -22,9 +25,10 @@ def submit_job(
     language: str | None,
     settings: Settings,
     store: JobStore,
+    queue: JobQueue,
     probe: MediaProbe,
 ) -> Job:
-    """Validate and store an upload, then record a queued job. Blocking: run it in a thread."""
+    """Validate and store an upload, record a queued job, enqueue it. Blocking: run in a thread."""
     language_requested = normalize_language(language)
     job_id = uuid4().hex
     stored = save_upload(source, filename, job_id, settings, probe)
@@ -39,10 +43,12 @@ def submit_job(
         created_at=datetime.now(UTC),
     )
     try:
+        # Record first, then enqueue: the worker must always find the job it is given.
         store.create(job)
+        queue.enqueue(job_id, stored.path)
     except RedisError as exc:
-        stored.path.unlink(missing_ok=True)
-        logger.warning("could not record job", extra={"job_id": job_id, "error": repr(exc)})
+        logger.warning("could not queue job", extra={"job_id": job_id, "error": repr(exc)})
+        _discard(job_id, stored.path, store)
         raise AppError(
             "queue_unavailable",
             "The service is temporarily unavailable. Please try again in a moment.",
@@ -61,3 +67,30 @@ def submit_job(
         },
     )
     return job
+
+
+def _discard(job_id: str, media_path: Path, store: JobStore) -> None:
+    media_path.unlink(missing_ok=True)
+    # Best effort: if Redis is down, the job record may be gone or unreachable anyway, and any
+    # record left behind still expires with its TTL.
+    with suppress(RedisError):
+        store.delete(job_id)
+
+
+def get_job(store: JobStore, job_id: str) -> Job:
+    job = store.get(job_id)
+    if job is None:
+        raise AppError("job_not_found", "This job does not exist or has expired.", 404)
+    return job
+
+
+def get_finished_result(store: JobStore, job_id: str) -> tuple[Job, JobResult]:
+    job = get_job(store, job_id)
+    if job.status == JobStatus.FAILED:
+        raise AppError("job_not_ready", "This job failed, so there is no transcript.", 409)
+    if job.status != JobStatus.DONE:
+        raise AppError("job_not_ready", "The transcript is not ready yet.", 409)
+    result = store.get_result(job_id)
+    if result is None:
+        raise AppError("job_not_found", "This job does not exist or has expired.", 404)
+    return job, result

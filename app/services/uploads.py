@@ -49,7 +49,7 @@ def save_upload(
             limit_min = settings.max_duration_sec / 60
             raise AppError(
                 "media_too_long",
-                f"The recording is longer than the {limit_min:g} minute limit.",
+                f"The audio or video is longer than the {limit_min:g} minute limit.",
                 422,
             )
     except Exception:
@@ -57,6 +57,10 @@ def save_upload(
         raise
 
     return StoredUpload(path=path, filename=display_name, size_bytes=size, duration_sec=duration)
+
+
+def file_too_large_error(max_upload_mb: int) -> AppError:
+    return AppError("file_too_large", f"The file is larger than the {max_upload_mb} MB limit.", 413)
 
 
 def _display_name(filename: str | None) -> str:
@@ -71,7 +75,7 @@ def _validated_extension(filename: str) -> str:
         allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
         raise AppError(
             "unsupported_file_type",
-            f"This file type is not supported. Supported types: {allowed}.",
+            f"Please upload an audio or video file. Supported types: {allowed}.",
             415,
         )
     return extension
@@ -83,11 +87,7 @@ def _copy_with_limit(source: BinaryIO, destination: Path, max_bytes: int) -> int
         while chunk := source.read(CHUNK_SIZE):
             size += len(chunk)
             if size > max_bytes:
-                raise AppError(
-                    "file_too_large",
-                    f"The file is larger than the {max_bytes // (1024 * 1024)} MB limit.",
-                    413,
-                )
+                raise file_too_large_error(max_bytes // (1024 * 1024))
             out.write(chunk)
     return size
 
@@ -99,6 +99,6 @@ def _probe_duration(probe: MediaProbe, path: Path, job_id: str) -> float:
         logger.info("media rejected", extra={"job_id": job_id, "reason": str(exc)})
         raise AppError(
             "invalid_media",
-            "We could not read any audio from this file. It may be damaged or have no sound.",
+            "We could not read this audio or video file. It may be damaged or have no sound track.",
             422,
         ) from exc

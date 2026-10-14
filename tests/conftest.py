@@ -6,10 +6,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_media_probe, get_redis
+from app.api.deps import get_job_queue, get_media_probe, get_redis
 from app.config import Settings
+from app.jobs.store import JobStore
 from app.main import create_app
 from app.services.media_probe import MediaInfo, MediaProbeError
+
+JOB_TTL_SEC = 3600
 
 
 class FakeMediaProbe:
@@ -23,6 +26,19 @@ class FakeMediaProbe:
         if self.error:
             raise self.error
         return MediaInfo(duration_sec=self.duration_sec)
+
+
+class FakeJobQueue:
+    """Records enqueued jobs instead of sending them to RQ. Set `error` to simulate Redis down."""
+
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[str, Path]] = []
+        self.error: Exception | None = None
+
+    def enqueue(self, job_id: str, media_path: Path) -> None:
+        if self.error:
+            raise self.error
+        self.enqueued.append((job_id, media_path))
 
 
 @pytest.fixture
@@ -47,17 +63,31 @@ def fake_redis(redis_server: fakeredis.FakeServer) -> fakeredis.FakeRedis:
 
 
 @pytest.fixture
+def store(fake_redis: fakeredis.FakeRedis) -> JobStore:
+    return JobStore(fake_redis, ttl_sec=JOB_TTL_SEC)
+
+
+@pytest.fixture
 def media_probe() -> FakeMediaProbe:
     return FakeMediaProbe()
 
 
 @pytest.fixture
+def job_queue() -> FakeJobQueue:
+    return FakeJobQueue()
+
+
+@pytest.fixture
 def app(
-    settings: Settings, fake_redis: fakeredis.FakeRedis, media_probe: FakeMediaProbe
+    settings: Settings,
+    fake_redis: fakeredis.FakeRedis,
+    media_probe: FakeMediaProbe,
+    job_queue: FakeJobQueue,
 ) -> FastAPI:
     app = create_app(settings)
     app.dependency_overrides[get_redis] = lambda: fake_redis
     app.dependency_overrides[get_media_probe] = lambda: media_probe
+    app.dependency_overrides[get_job_queue] = lambda: job_queue
     return app
 
 

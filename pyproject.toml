@@ -13,6 +13,7 @@ dependencies = [
     "python-multipart==0.0.32",
     "pydantic-settings==2.15.0",
     "redis==8.1.0",
+    "rq==2.12.0",
     "faster-whisper==1.2.1",
     # Transitive dependency of faster-whisper, pinned on purpose: faster-whisper 1.2.1 allows av>=11,
     # but av 19 removed the `metadata_errors` argument it uses, so decoding fails with a TypeError.
