@@ -683,3 +683,46 @@ Numbers come from the worker logs of that session (`faster-whisper-small`, CPU, 
   `JOB_TIMEOUT_SEC=3600`, so it would end as `transcription_timeout`. A Hebrew-focused deployment should
   use a GPU (`WHISPER_DEVICE=cuda`, `WHISPER_COMPUTE_TYPE=float16`), or raise `JOB_TIMEOUT_SEC` / lower
   `MAX_DURATION_SEC`, and send `language=he` rather than relying on auto-detect.
+
+## Milestone 6: README
+- `README.md` written for a first-time reader: what it is, quick start, usage (UI and API with curl),
+  architecture (Mermaid diagram and job lifecycle), key decisions, assumptions, trade-offs and
+  limitations, configuration, testing, production next steps, and how AI was used. Every number in it
+  comes from this file or from a real run. Screenshots: `docs/images/result_EN.png` (main),
+  `progress.png`, `hebrew.png`. The Mermaid diagram was checked by rendering it with Mermaid 11.4.1
+  (7 nodes, no syntax errors).
+
+## Log review (Milestone 6)
+- **job_id on third-party lines.** faster-whisper's own INFO lines ("Processing audio with duration…",
+  "VAD filter removed…", "Detected language 'en' with probability 0.94") had no `job_id`, which the
+  logging rules require for every line about a job. `process_job` now runs inside
+  `job_log_context(job_id)` (a `ContextVar`), and a `JobContextFilter` on the log handler adds `job_id` to
+  any record that lacks one while a job runs. Explicit `job_id` values are never overwritten, and lines
+  outside a job are unchanged. Verified in Docker: all three faster-whisper lines end with `job_id=…`.
+- **uvicorn `color_message`.** uvicorn passes an ANSI-coloured copy of some messages as an extra field,
+  which our formatter printed (`color_message="Started server process [\u001b[36m%d…"`). It is now
+  treated as a standard attribute and dropped. Verified in Docker.
+- Error messages were reviewed in Milestone 5 (one plain-language message per code); no changes.
+
+## Fresh-clone test (Milestone 6)
+Followed the README exactly, from a clone of `https://github.com/orischnieder/transcription-service.git`
+(commit `4e34e87`, i.e. without this milestone's uncommitted README and log changes):
+- To behave like a machine with no previous install, it ran under `COMPOSE_PROJECT_NAME=tsvc-fresh`, so it
+  got its own empty volumes (a clone in a folder named `transcription-service` would otherwise share the
+  existing project's volumes and cached model). The existing stack was stopped to free port 8000.
+- `docker compose up --build`: from the command to `worker ready` in 26 s (image layers were cached on
+  this machine; the model download and load took 13.9 s). `/health` returned `{"status":"ok","redis":"ok"}`,
+  `/docs` and `/` returned `200`.
+- The README's curl example, run as written with an 11 s file: upload → `queued`, polling →
+  `processing` → `done` with the correct text, `curl -OJ …/transcript.srt` saved `interview.srt` with two
+  correct cues. An invalid upload returned the documented error shape.
+- `docker compose --profile test run --build --rm tests`: 103 passed.
+- Local route (`python -m venv`, `pip install -e ".[dev]"`, `pytest`, `ruff`, `mypy app scripts`): failed at
+  first with `OSError: No such file or directory … onnxruntime\quantization\…` because the clone sat in a
+  very deep folder and Windows' 260-character path limit was exceeded. From a short path everything
+  passed (101 passed, 2 skipped without ffprobe; lint, format and mypy clean). The README now tells
+  Windows users to clone to a short path or enable long paths.
+- Not covered: a truly cold Docker build cache (base image and dependency layers were already cached),
+  and a machine without the samples (the curl test used a copy of `samples/jfk.flac`).
+- Cleanup: the test project's containers and volumes were removed (`down -v`), both clones deleted, and
+  the original stack rebuilt and restarted.

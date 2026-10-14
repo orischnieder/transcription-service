@@ -1,6 +1,9 @@
 import json
 import logging
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -9,7 +12,31 @@ _STANDARD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {
     "message",
     "asctime",
     "taskName",
+    "color_message",  # uvicorn's ANSI-coloured copy of the message; noise in our format
 }
+
+
+_current_job_id: ContextVar[str | None] = ContextVar("current_job_id", default=None)
+
+
+@contextmanager
+def job_log_context(job_id: str) -> Iterator[None]:
+    """Attach `job_id` to every log record written inside this block (see JobContextFilter)."""
+    token = _current_job_id.set(job_id)
+    try:
+        yield
+    finally:
+        _current_job_id.reset(token)
+
+
+class JobContextFilter(logging.Filter):
+    """Adds the current job_id to records that do not carry one (e.g. third-party loggers)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        job_id = _current_job_id.get()
+        if job_id is not None and not hasattr(record, "job_id"):
+            record.job_id = job_id
+        return True
 
 
 def _extras(record: logging.LogRecord) -> dict[str, Any]:
@@ -62,6 +89,7 @@ def configure_logging(level: str, log_format: str) -> None:
     """Send all logs (ours and uvicorn's) to stdout in one format."""
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter() if log_format == "json" else TextFormatter())
+    handler.addFilter(JobContextFilter())
 
     root = logging.getLogger()
     root.handlers = [handler]

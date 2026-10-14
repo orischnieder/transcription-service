@@ -13,6 +13,7 @@ from rq.timeouts import JobTimeoutException
 from app.engines.base import TranscriptionEngine
 from app.jobs.models import Job, JobResult
 from app.jobs.store import JobStore
+from app.logging_config import job_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -45,15 +46,18 @@ def run_transcription(job_id: str, media_path: str) -> None:
 
 
 def process_job(job_id: str, media_path: Path, context: WorkerContext) -> None:
-    try:
-        job = context.store.get(job_id)
-        if job is None:
-            logger.warning("job not found, skipping (expired?)", extra={"job_id": job_id})
-            return
-        _transcribe(job, media_path, context)
-    finally:
-        # Success or failure, the media file is not needed any more (privacy and disk space).
-        media_path.unlink(missing_ok=True)
+    # Every log line written while this job runs gets its job_id, including faster-whisper's own
+    # lines ("Processing audio…", "Detected language…") that we cannot pass `extra` to.
+    with job_log_context(job_id):
+        try:
+            job = context.store.get(job_id)
+            if job is None:
+                logger.warning("job not found, skipping (expired?)", extra={"job_id": job_id})
+                return
+            _transcribe(job, media_path, context)
+        finally:
+            # Success or failure, the media file is not needed any more (privacy and disk space).
+            media_path.unlink(missing_ok=True)
 
 
 def _transcribe(job: Job, media_path: Path, context: WorkerContext) -> None:
