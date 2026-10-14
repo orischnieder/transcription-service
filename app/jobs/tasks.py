@@ -66,7 +66,7 @@ def _transcribe(job: Job, media_path: Path, context: WorkerContext) -> None:
             "file_name": job.filename,
             "size_bytes": job.size_bytes,
             "media_duration_sec": round(job.media_duration_sec, 1),
-            "language_requested": job.language_requested,
+            "language_requested": job.language_requested or "auto",
             "model": context.model_name,
         },
     )

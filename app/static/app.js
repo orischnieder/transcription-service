@@ -32,12 +32,17 @@
   };
 
   const STAGES = ["uploading", "queued", "processing", "done"];
+  // `label` while the stage is current, `doneLabel` once it is behind us.
   const STAGE_TEXT = {
-    uploading: { label: "Uploading", hint: "Sending your file. Keep this page open." },
-    queued: { label: "Queued", hint: "Waiting for the transcriber to pick up your file." },
-    processing: { label: "Transcribing", hint: "Listening to your file. Longer recordings take longer." },
-    done: { label: "Done", hint: "" },
+    uploading: { label: "Uploading", doneLabel: "Upload done", hint: "Sending your file. Keep this page open." },
+    queued: { label: "Queued", doneLabel: "Queued", hint: "Waiting for the transcriber to pick up your file." },
+    processing: { label: "Transcribing…", doneLabel: "Transcribed", hint: "" },
+    done: { label: "Done", doneLabel: "Done", hint: "" },
   };
+  // Whisper works through the audio in 30-second windows, so a short file reports no progress
+  // until it is finished. Until the first real update, the bar is indeterminate and says why.
+  const HINT_TRANSCRIBING_WAITING = "Working on it. Short recordings finish in one step, so there may be no percentage until the end.";
+  const HINT_TRANSCRIBING = "Listening to your file. Longer recordings take longer.";
 
   const $ = (id) => document.getElementById(id);
 
@@ -188,7 +193,7 @@
       xhr.open("POST", "/api/jobs");
       xhr.responseType = "json";
       xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) setPercent((event.loaded / event.total) * 100);
+        if (event.lengthComputable) showMeter((event.loaded / event.total) * 100);
       };
       xhr.onload = () => {
         if (xhr.status === 202 && xhr.response) resolve(xhr.response);
@@ -239,7 +244,7 @@
       if (job.status === "done") return job;
       if (job.status === "failed") throw new AppError(job.error_code, job.error_message);
       setStage(job.status);
-      if (job.status === "processing") setPercent(job.progress);
+      if (job.status === "processing") showTranscribingProgress(job.progress);
       await sleep(POLL_INTERVAL_MS);
     }
   }
@@ -250,10 +255,11 @@
     $("progress-title").textContent = file.name;
     delete $("stage-label").dataset.stage; // a previous run may have ended on any stage
     setStage("uploading");
-    setPercent(0);
     showView("progress");
     try {
       const job = await uploadFile(file, $("language").value);
+      // Upload finished: move on at once instead of leaving "Uploading 100%" on screen.
+      setStage("queued");
       const finished = await waitForJob(job.id);
       stopElapsed();
       showResult(finished);
@@ -265,43 +271,58 @@
 
   // ---------- Progress display ----------
 
+  // Each stage starts with its own meter: uploading counts up from 0%; queued and transcribing
+  // start indeterminate, so the bar never jumps from "100% uploaded" back to "0%".
   function setStage(stage) {
+    const label = $("stage-label");
+    if (label.dataset.stage === stage) return; // already showing this stage
+    label.dataset.stage = stage;
+
     const current = STAGES.indexOf(stage);
     document.querySelectorAll(".stages li").forEach((item, index) => {
+      const text = STAGE_TEXT[item.dataset.stage];
+      item.textContent = index < current ? text.doneLabel : text.label;
       item.classList.toggle("is-done", index < current);
       item.classList.toggle("is-current", index === current);
       if (index === current) item.setAttribute("aria-current", "step");
       else item.removeAttribute("aria-current");
     });
 
-    const label = $("stage-label");
-    if (label.dataset.stage === stage) return; // already showing this stage
-    label.dataset.stage = stage;
     label.textContent = STAGE_TEXT[stage].label;
-    $("stage-hint").textContent = STAGE_TEXT[stage].hint;
+    $("stage-hint").textContent =
+      stage === "processing" ? HINT_TRANSCRIBING_WAITING : STAGE_TEXT[stage].hint;
     $("status-live").textContent = STAGE_TEXT[stage].label;
-
-    const bar = $("meter-bar");
-    const waiting = stage === "queued";
-    bar.classList.toggle("is-indeterminate", waiting);
-    $("percent").hidden = waiting;
-    if (waiting) {
-      bar.removeAttribute("aria-valuenow");
-      bar.style.width = "";
-    } else {
-      setPercent(0);
-    }
+    showMeter(stage === "uploading" ? 0 : null);
 
     if (stage === "processing") startElapsed();
     else $("elapsed").textContent = "";
   }
 
-  function setPercent(value) {
+  // The worker reports 0 until Whisper finishes its first 30-second window.
+  function showTranscribingProgress(progress) {
+    if (progress > 0) {
+      showMeter(progress);
+      $("stage-hint").textContent = HINT_TRANSCRIBING;
+    }
+  }
+
+  // A number shows a determinate bar with that percentage; null shows an indeterminate bar.
+  function showMeter(value) {
+    const bar = $("meter-bar");
+    const indeterminate = value === null;
+    bar.classList.toggle("is-indeterminate", indeterminate);
+    $("percent").hidden = indeterminate;
+    if (indeterminate) {
+      bar.style.width = "";
+      bar.removeAttribute("aria-valuenow");
+      bar.setAttribute("aria-valuetext", $("stage-label").textContent);
+      return;
+    }
     const percent = Math.max(0, Math.min(100, Math.round(value)));
     $("percent").textContent = `${percent}%`;
-    const bar = $("meter-bar");
     bar.style.width = `${percent}%`;
     bar.setAttribute("aria-valuenow", String(percent));
+    bar.removeAttribute("aria-valuetext");
   }
 
   function startElapsed() {

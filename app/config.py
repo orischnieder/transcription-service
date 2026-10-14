@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
     whisper_vad: bool = True
+    # Same variable huggingface_hub itself reads. When true, the model must already be in the cache
+    # (HF_HOME) and the worker starts without contacting huggingface.co (closed networks).
+    hf_hub_offline: bool = False
 
     # Sized for video (far larger than audio of the same length); duration is capped separately.
     max_upload_mb: int = Field(default=1024, gt=0)

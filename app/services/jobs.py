@@ -63,7 +63,7 @@ def submit_job(
             "file_name": stored.filename,
             "size_bytes": stored.size_bytes,
             "media_duration_sec": round(stored.duration_sec, 1),
-            "language_requested": language_requested,
+            "language_requested": language_requested or "auto",
         },
     )
     return job

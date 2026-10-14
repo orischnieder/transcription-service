@@ -17,8 +17,11 @@ MEDIA = Path("unused.wav")
 class FakeWhisperModel:
     """Stands in for faster_whisper.WhisperModel so no model is downloaded or loaded."""
 
-    def __init__(self, model_id: str, device: str, compute_type: str) -> None:
+    def __init__(
+        self, model_id: str, device: str, compute_type: str, local_files_only: bool = False
+    ) -> None:
         self.init_args = (model_id, device, compute_type)
+        self.local_files_only = local_files_only
         self.transcribe_kwargs: dict[str, Any] = {}
 
     def transcribe(self, path: str, **kwargs: Any) -> tuple[Any, Any]:
@@ -57,12 +60,35 @@ def test_factory_builds_faster_whisper_engine_from_settings() -> None:
             whisper_device="cpu",
             whisper_compute_type="int8",
             whisper_vad=False,
+            hf_hub_offline=True,
         )
     )
 
     assert isinstance(engine, FasterWhisperEngine)
     assert engine._model.init_args == ("Systran/faster-whisper-base", "cpu", "int8")
+    assert engine._model.local_files_only is True
     assert engine._vad is False
+
+
+@pytest.mark.usefixtures("fake_whisper_model")
+def test_engine_downloads_by_default() -> None:
+    engine = create_engine(_settings(engine="faster-whisper"))
+
+    assert engine._model.local_files_only is False  # type: ignore[attr-defined]
+
+
+def test_offline_engine_explains_a_missing_model(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def missing_model(*args: Any, **kwargs: Any) -> None:
+        raise FileNotFoundError("not in cache")
+
+    monkeypatch.setattr(faster_whisper_engine, "WhisperModel", missing_model)
+
+    with pytest.raises(FileNotFoundError):
+        FasterWhisperEngine("any/model", "cpu", "int8", vad=True, local_files_only=True)
+
+    assert "HF_HUB_OFFLINE=false" in caplog.text
 
 
 # FasterWhisperEngine (with the model replaced)

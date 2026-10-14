@@ -55,6 +55,9 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+QUIET_LOGGERS = ("httpx", "httpx2")
+
+
 def configure_logging(level: str, log_format: str) -> None:
     """Send all logs (ours and uvicorn's) to stdout in one format."""
     handler = logging.StreamHandler(sys.stdout)
@@ -70,3 +73,7 @@ def configure_logging(level: str, log_format: str) -> None:
         uvicorn_logger.propagate = True
     # Our request logging middleware replaces uvicorn's access log.
     logging.getLogger("uvicorn.access").disabled = True
+
+    # HTTP clients (the Hugging Face hub uses httpx2) log every request at INFO; keep only problems.
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)

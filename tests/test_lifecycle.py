@@ -214,3 +214,19 @@ def test_result_from_engine_dataclass_round_trips(
         (0.0, 1.5, "Shalom."),
         (1.5, 3.0, "Hello."),
     ]
+
+
+def test_auto_detect_is_logged_as_auto(
+    client: TestClient, job_queue: FakeJobQueue, store: JobStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    media_path = submit(client, job_queue)
+
+    process_job(job_id_of(media_path), media_path, context(store, FakeEngine()))
+
+    logged = {
+        r.getMessage(): r.language_requested  # type: ignore[attr-defined]
+        for r in caplog.records
+        if r.getMessage() in ("job created", "job started")
+    }
+    assert logged == {"job created": "auto", "job started": "auto"}

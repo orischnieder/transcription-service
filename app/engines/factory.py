@@ -16,4 +16,5 @@ def create_engine(settings: Settings) -> TranscriptionEngine:
         device=settings.whisper_device,
         compute_type=settings.whisper_compute_type,
         vad=settings.whisper_vad,
+        local_files_only=settings.hf_hub_offline,
     )

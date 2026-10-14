@@ -12,10 +12,33 @@ logger = logging.getLogger(__name__)
 class FasterWhisperEngine:
     """Whisper via faster-whisper (CTranslate2). The model is loaded once, in the constructor."""
 
-    def __init__(self, model_id: str, device: str, compute_type: str, vad: bool) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        device: str,
+        compute_type: str,
+        vad: bool,
+        local_files_only: bool = False,
+    ) -> None:
         start = time.perf_counter()
-        # A Hugging Face repo id is downloaded to HF_HOME on first use, then read from the cache.
-        self._model = WhisperModel(model_id, device=device, compute_type=compute_type)
+        # A Hugging Face repo id is downloaded to HF_HOME on first use. Afterwards it is read from
+        # the cache, but faster-whisper still asks huggingface.co for the latest revision unless
+        # `local_files_only` is set, which makes start-up work without network access.
+        try:
+            self._model = WhisperModel(
+                model_id,
+                device=device,
+                compute_type=compute_type,
+                local_files_only=local_files_only,
+            )
+        except Exception:
+            if local_files_only:
+                logger.error(
+                    "model not found in the local cache; start once with HF_HUB_OFFLINE=false "
+                    "and network access to download it",
+                    extra={"model": model_id},
+                )
+            raise
         self._vad = vad
         logger.info(
             "model loaded",
@@ -24,6 +47,7 @@ class FasterWhisperEngine:
                 "device": device,
                 "compute_type": compute_type,
                 "vad": vad,
+                "offline": local_files_only,
                 "load_sec": round(time.perf_counter() - start, 2),
             },
         )

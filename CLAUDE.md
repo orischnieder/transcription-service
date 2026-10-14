@@ -138,6 +138,7 @@ with a generic message and are logged with a stack trace.
 | `WHISPER_DEVICE` | `cpu` |
 | `WHISPER_COMPUTE_TYPE` | `int8` |
 | `WHISPER_VAD` | `true` |
+| `HF_HUB_OFFLINE` | `false` (`true` = load the cached model without network access) |
 | `MAX_UPLOAD_MB` | `1024` (sized for video; duration is capped separately) |
 | `MAX_DURATION_SEC` | `3600` |
 | `REDIS_URL` | `redis://redis:6379/0` |

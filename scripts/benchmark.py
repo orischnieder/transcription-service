@@ -28,6 +28,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vad", action=argparse.BooleanOptionalAction, default=settings.whisper_vad
     )
+    parser.add_argument(
+        "--offline",
+        action=argparse.BooleanOptionalAction,
+        default=settings.hf_hub_offline,
+        help="load from the local cache only (no request to huggingface.co)",
+    )
     parser.add_argument("--language", default=None, help="e.g. 'en'; auto-detect if omitted")
     return parser.parse_args()
 
@@ -36,7 +42,9 @@ def main() -> None:
     args = parse_args()
 
     start = time.perf_counter()
-    engine = FasterWhisperEngine(args.model, args.device, args.compute_type, args.vad)
+    engine = FasterWhisperEngine(
+        args.model, args.device, args.compute_type, args.vad, local_files_only=args.offline
+    )
     load_sec = time.perf_counter() - start
 
     start = time.perf_counter()

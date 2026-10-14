@@ -1,7 +1,7 @@
 import json
 import logging
 
-from app.logging_config import JsonFormatter, TextFormatter
+from app.logging_config import JsonFormatter, TextFormatter, configure_logging
 
 
 def _record(message: str, **extra: object) -> logging.LogRecord:
@@ -23,3 +23,11 @@ def test_json_formatter_includes_extras() -> None:
     assert payload["message"] == "job done"
     assert payload["level"] == "INFO"
     assert payload["job_id"] == "abc"
+
+
+def test_http_client_request_logs_are_quiet() -> None:
+    configure_logging("INFO", "text")
+
+    assert not logging.getLogger("httpx2").isEnabledFor(logging.INFO)
+    assert logging.getLogger("httpx2").isEnabledFor(logging.WARNING)
+    assert logging.getLogger("app.jobs").isEnabledFor(logging.INFO)

@@ -409,4 +409,12 @@ h2:focus { outline: none; } /* headings receive focus only to move screen-reader
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
+
+  /* No sweep: a still, full-width, faded bar. The "Queued" / "Transcribing…" text carries the state. */
+  .meter-bar.is-indeterminate {
+    width: 100%;
+    animation: none;
+    transform: none;
+    opacity: .35;
+  }
 }

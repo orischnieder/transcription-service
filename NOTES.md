@@ -542,11 +542,9 @@ Format of each entry:
 - Language: "Detect automatically" by default, plus the 99 supported languages. `/api/limits` now also
   returns `languages` (one source of truth), and the browser names them with `Intl.DisplayNames`
   (Whisper's `jw` is shown as Javanese via its standard code `jv`).
-- Progress: four stages (Uploading → Queued → Transcribing → Done) with the current one marked
-  (`aria-current="step"`). Uploading shows the XHR upload percentage; Queued shows an indeterminate bar;
-  Transcribing shows the job's percentage and the elapsed time since transcription started (client clock,
-  `m:ss`). Stage changes are announced through an `aria-live` region; percentages are not, to avoid
-  flooding screen readers.
+- Progress: four stages with the current one marked (`aria-current="step"`); revised after Ori's manual
+  testing, see "Progress display: one meter per stage". Stage changes are announced through an
+  `aria-live` region; percentages are not, to avoid flooding screen readers.
 - Result: file name, duration, detected language and segment count; transcript with a timestamp per
   segment; "Copy text" (one segment per line, same as the `.txt`), "Download .txt", "Download .srt",
   "Transcribe another file". Each segment is its own `<p dir="auto">`, so Hebrew and Arabic lines are
@@ -591,3 +589,97 @@ browser cannot drive the OS file dialog.
 | Narrow screen (375 × 812) | Single column, no horizontal scroll, buttons full-width |
 | Keyboard only | Tab order: Choose a file → Spoken language → Transcribe; Enter starts; focus moves to each view's heading; visible focus ring |
 | Dark mode | Readable contrast, same layout |
+
+### Ori's manual tests with real phone videos (desktop browser, real file picker)
+Numbers come from the worker logs of that session (`faster-whisper-small`, CPU, VAD on, auto-detect).
+
+| Check | Result |
+|---|---|
+| English, quiet room (phone video) | Not tested: no separate quiet-room English video was recorded. Clean English is covered by `jfk.flac` and `physicsworks.wav` |
+| English with background noise (`en_noise.mov`, 22.6 s, 42 MB) | `done`: detected `en` (probability 0.68), 3 segments, 4.4 s (RTF 0.19). Transcript accurate; the only error was the name "Ori" transcribed as "Ory" (proper names are a known weak spot) |
+| Hebrew speech (`he_speech.mov`, 16.9 s, 31 MB) | `done`: detected `he` (probability 0.97), 4 segments, 4.4-4.5 s (RTF 0.26-0.27). RTL display correct. Accuracy noticeably lower than English (see "Hebrew accuracy and a Hebrew model option") |
+| Screen recording without sound | `done` with "No speech was found in this file.": the phone kept a silent audio track, so the file passed validation (ffprobe found an audio stream) and the model found no speech. A video with no audio track at all would instead be rejected as `invalid_media` (tested earlier with a generated MP4) |
+| Uploads folder after the jobs | Empty: every media file was deleted after its job |
+| Short files and progress | Files under ~30 s (confirmed with `jfk.flac`, 11 s, so it depends on duration, not on video) sat at 0% until done, and the bar jumped from 100% (upload) back to 0%. Fixed: see "Progress display: one meter per stage" |
+
+### Re-test after the progress fix (browser pane, real model)
+| Check | Result |
+|---|---|
+| `jfk.flac` (11 s) | Uploading 0 → 100% → stages show "Upload done", "Transcribing…" with an indeterminate bar and hint → result. No 0% shown during transcription, no jump back |
+| `physicsworks.wav` (3:23) | Indeterminate "Transcribing…" until the first update, then 3% → 15% → 28% → 45% → 57% → 71% → result; elapsed time counting |
+| Worker log | `language_requested=auto`; no `httpx2 HTTP Request` line at start-up |
+| Uploads folder afterwards | Empty |
+
+## Progress display: one meter per stage (Milestone 5 follow-up)
+- Context (from Ori's manual testing): one bar showed upload progress and then transcription progress,
+  so users saw "100%" jump back to "0%". And for files shorter than ~30 s the bar sat at 0% until the job
+  was done: Whisper decodes audio in 30-second windows and faster-whisper yields segments only after a
+  window is decoded, so a short file produces all its segments (and our only progress update) at the very
+  end. Confirmed with `jfk.flac` (11 s), so it depends on duration, not on video.
+- Decision: labelled stages that change wording as they complete: "Uploading" → "Upload done", then
+  "Queued", "Transcribing…" → "Transcribed", "Done". Each stage starts its own meter: uploading counts up
+  from 0%; the moment the upload finishes the page switches to "Queued" (no "100%" left on screen);
+  queued and transcribing show an indeterminate, animated bar with no percentage, and transcribing says
+  "Working on it. Short recordings finish in one step, so there may be no percentage until the end."
+  The percentage appears only once the job reports progress above 0. The indeterminate bar has
+  `aria-valuetext` ("Queued" / "Transcribing…") instead of a number. With `prefers-reduced-motion` the
+  bar does not sweep: it is shown full-width and faded, and the text carries the state (previously the
+  global reduced-motion rule ended the sweep off-screen, hiding the bar).
+- Alternatives: fake progress based on elapsed time and an estimated real-time factor (looks smooth but
+  is invented, and wrong on a busy or slower machine); smaller decoding windows (not supported by
+  Whisper).
+- Consequences: short files show an honest "working on it" state instead of a misleading 0%. No server
+  change was needed.
+
+## Offline model loading (HF_HUB_OFFLINE)
+- Context (from Ori's testing): the worker contacted huggingface.co on every start
+  (`GET https://huggingface.co/api/models/Systran/faster-whisper-small/revision/main`) even with the model
+  cached, which is a problem in closed networks.
+- Decision: setting `HF_HUB_OFFLINE` (default `false`), passed to faster-whisper as
+  `WhisperModel(..., local_files_only=True)`, so the model is loaded from `HF_HOME` without any request.
+  It is the same variable `huggingface_hub` reads itself, so setting it also switches the whole hub
+  client to offline mode. If the model is not in the cache, the worker logs "model not found in the local
+  cache; start once with HF_HUB_OFFLINE=false and network access to download it" and exits (Docker
+  restarts it, so the message repeats until fixed). The benchmark script has a matching `--offline` flag.
+  The `model loaded` log line now includes `offline=true/false`.
+- Verified: in a container with no network at all (`docker run --network none`) and `--offline`, a cached
+  model loaded in 9.5 s and transcribed correctly.
+- Honest nuance: in that same no-network container *without* the flag, `huggingface_hub` also fell back to
+  the cache, because the connection failed immediately. The setting matters because (1) it guarantees no
+  outbound request is attempted, which closed or audited networks may require, and (2) on networks that
+  silently drop traffic instead of refusing it, the revision check would otherwise wait for a timeout on
+  every start.
+- Alternatives: rely on the hub's automatic fallback (works only when the connection fails fast); bake the
+  model into the image (bigger image, model change needs a rebuild).
+
+## HTTP client request logs lowered to WARNING
+- Decision: `configure_logging` sets the `httpx` and `httpx2` loggers (the Hugging Face hub client uses
+  `httpx2`) to WARNING, so per-request INFO lines such as `HTTP Request: GET https://huggingface.co/...`
+  disappear while errors still show. Covered by a test.
+
+## "auto" instead of None in logs
+- Decision: `job created` and `job started` log `language_requested=auto` when the user chose automatic
+  detection. The stored job keeps `language_requested: null` in the API, which is the accurate data
+  value; only the log wording changes. Covered by a test.
+
+## Hebrew accuracy and a Hebrew model option
+- Observation (Ori, real Hebrew phone recording): language detection was confident (`he`, 0.97) and RTL
+  display works, but transcription accuracy with `faster-whisper-small` is noticeably lower than for
+  English. Small multilingual Whisper models are known to be weaker on lower-resource languages.
+- Verified option: **`ivrit-ai/whisper-large-v3-turbo-ct2`** on Hugging Face, from ivrit.ai, a Hebrew
+  fine-tune of `openai/whisper-large-v3-turbo` (dataset `ivrit-ai/crowd-transcribe-v5`), already converted
+  to CTranslate2 format (`model.bin`, `config.json`, `preprocessor_config.json`, tokenizer, vocabulary),
+  licence Apache-2.0, about 1.6 GB. Checked through the Hugging Face API and by actually loading it in our
+  worker image with our `FasterWhisperEngine` (set `WHISPER_MODEL=ivrit-ai/whisper-large-v3-turbo-ct2`; no
+  code change). ivrit.ai also publishes `ivrit-ai/whisper-large-v3-ct2` (full large-v3, Apache-2.0).
+- Measured on this laptop CPU (`int8`, VAD on) with `jfk.flac`, the only short sample available here
+  (English, 11 s): first load 53.8 s including the 1.6 GB download, cached load 9.5 s; transcription
+  19.5-21.9 s, i.e. RTF ~1.8-2.0 (slower than real time; `faster-whisper-small` is ~0.3 on the same file).
+  The English text came out correct, but auto-detection labelled it `he`, as expected from a
+  Hebrew-tuned model.
+- Not measured: its Hebrew accuracy. There is no Hebrew sample in `samples/` and Ori's recording is not
+  in the repository, so the gain over `small` is ivrit.ai's claim, not something verified here.
+- Consequences if chosen: on CPU a 60-minute file would take roughly 2 hours, above the default
+  `JOB_TIMEOUT_SEC=3600`, so it would end as `transcription_timeout`. A Hebrew-focused deployment should
+  use a GPU (`WHISPER_DEVICE=cuda`, `WHISPER_COMPUTE_TYPE=float16`), or raise `JOB_TIMEOUT_SEC` / lower
+  `MAX_DURATION_SEC`, and send `language=he` rather than relying on auto-detect.
