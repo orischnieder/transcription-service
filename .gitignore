@@ -29,5 +29,17 @@ models/
 .DS_Store
 Thumbs.db
 
-# Generated knowledge graph
-graphify-out/
+# Sample and user media (large binaries; never committed)
+samples/
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.ogg
+*.oga
+*.opus
+*.flac
+*.webm
+*.mp4
+*.mov
+*.mkv

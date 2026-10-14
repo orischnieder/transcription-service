@@ -10,4 +10,4 @@ venv
 .ruff_cache
 data
 models
-graphify-out
+samples

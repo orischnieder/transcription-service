@@ -12,12 +12,16 @@ dependencies = [
     "uvicorn==0.54.0",
     "pydantic-settings==2.15.0",
     "redis==8.1.0",
+    "faster-whisper==1.2.1",
+    # Transitive dependency of faster-whisper, pinned on purpose: faster-whisper 1.2.1 allows av>=11,
+    # but av 19 removed the `metadata_errors` argument it uses, so decoding fails with a TypeError.
+    "av==18.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
-    "httpx==0.28.1",
+    "httpx2==2.13.1",
     "fakeredis==2.39.0",
     "ruff==0.17.0",
     "mypy==2.4.0",
@@ -39,7 +43,7 @@ strict = true
 files = ["app"]
 
 [[tool.mypy.overrides]]
-module = ["fakeredis.*"]
+module = ["fakeredis.*", "faster_whisper.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

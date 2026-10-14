@@ -42,6 +42,7 @@ CMD ["pytest"]
 FROM base AS runtime
 
 COPY app ./app
+COPY scripts ./scripts
 USER app
 EXPOSE 8000
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

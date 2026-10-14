@@ -5,7 +5,7 @@ Instructions for Claude Code working in this repository. Read this file and `PLA
 ## Project
 
 A service that lets a user upload a media file (audio or video) and receive a transcription.
-This is a take-home assignment for a backend / AI engineering role. The reviewers asked for:
+This is a take-home assignment for a backend / AI engineering role. Requirements:
 
 - An open-source transcription model available on Hugging Face.
 - Production-grade code: clean structure, error handling, readability.
@@ -13,10 +13,20 @@ This is a take-home assignment for a backend / AI engineering role. The reviewer
 - Clear step-by-step instructions to build, run and test locally.
 - A cloneable GitHub repository.
 
-The reviewers also hinted at what they look for: explained decisions, correct async behaviour while the model works,
-a replaceable transcription engine, validation of bad inputs, tests that run without the model, one-command startup,
-config and secrets out of code, clean lint/format/type checks, logs useful for debugging at 3am, honesty about
-shortcuts, thoughtful technology choices, and a small, friendly, user-centred UI.
+### Quality goals for this project
+
+- Every significant decision is written down with its reasoning and alternatives.
+- The API stays responsive while a transcription runs; the model never blocks a request.
+- The transcription engine sits behind an interface and can be swapped.
+- Bad input is rejected early with a clear, specific error.
+- The test suite runs fast without downloading or loading a model.
+- The whole stack starts with one command.
+- Configuration and secrets live outside the code.
+- Lint, format and type checks are clean.
+- Logs carry enough context to debug a failed job without reproducing it.
+- Shortcuts and limitations are stated openly.
+- Technology choices are deliberate and justified.
+- The UI is small, friendly and focused on what the user needs.
 
 ## Working agreement (important)
 
