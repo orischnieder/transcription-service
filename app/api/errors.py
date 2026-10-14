@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from redis.exceptions import RedisError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.schemas import ErrorDetail, ErrorResponse
@@ -49,6 +50,17 @@ async def _handle_http_error(request: Request, exc: Exception) -> JSONResponse:
     return error_response(exc.status_code, code, str(exc.detail))
 
 
+async def _handle_redis_error(request: Request, exc: Exception) -> JSONResponse:
+    # Redis holds the queue and the job state; when it is unreachable (e.g. restarting), the
+    # request can be retried, so this is a 503, not a 500.
+    logger.warning("redis unavailable", extra={"path": request.url.path, "error": repr(exc)})
+    return error_response(
+        503,
+        "queue_unavailable",
+        "The service is temporarily unavailable. Please try again in a moment.",
+    )
+
+
 async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None)
     logger.exception("unhandled error", extra={"request_id": request_id, "path": request.url.path})
@@ -61,4 +73,5 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, _handle_app_error)
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(StarletteHTTPException, _handle_http_error)
+    app.add_exception_handler(RedisError, _handle_redis_error)
     app.add_exception_handler(Exception, _handle_unexpected_error)

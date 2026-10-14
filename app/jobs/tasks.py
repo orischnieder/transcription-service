@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from redis.exceptions import RedisError
 from rq.timeouts import JobTimeoutException
 
 from app.engines.base import TranscriptionEngine
@@ -133,7 +134,11 @@ def _describe_failure(exc: Exception) -> tuple[str, str]:
 
 
 class ProgressReporter:
-    """Engine progress callback: writes to Redis at most once per interval, logs milestones."""
+    """Engine progress callback: writes to Redis at most once per interval, logs milestones.
+
+    Progress writes are best-effort: if Redis is briefly unreachable, transcription continues and
+    the next write (or the final "done") brings the job up to date.
+    """
 
     def __init__(
         self,
@@ -148,14 +153,26 @@ class ProgressReporter:
         self._clock = clock
         self._last_write = -math.inf
         self._milestones = list(PROGRESS_LOG_MILESTONES)
+        self._write_failed = False  # warn once per job, not on every failed write
 
     def __call__(self, percent: float) -> None:
         # Capped at 99 while processing: 100% is shown only once the job is actually done.
         progress = min(int(percent), 99)
         now = self._clock()
         if now - self._last_write >= self._interval_sec:
-            self._store.set_progress(self._job_id, progress)
             self._last_write = now
+            self._write_progress(progress)
         while self._milestones and progress >= self._milestones[0]:
             milestone = self._milestones.pop(0)
             logger.info("job progress", extra={"job_id": self._job_id, "progress": milestone})
+
+    def _write_progress(self, progress: int) -> None:
+        try:
+            self._store.set_progress(self._job_id, progress)
+        except RedisError as exc:
+            if not self._write_failed:
+                self._write_failed = True
+                logger.warning(
+                    "progress update failed, transcription continues",
+                    extra={"job_id": self._job_id, "error": repr(exc)},
+                )

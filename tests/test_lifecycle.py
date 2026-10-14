@@ -3,8 +3,10 @@
 import logging
 from pathlib import Path
 
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
+from redis.exceptions import ConnectionError as RedisConnectionError
 from rq.timeouts import JobTimeoutException
 
 from app.engines.base import Segment, TranscriptionResult
@@ -230,3 +232,54 @@ def test_auto_detect_is_logged_as_auto(
         if r.getMessage() in ("job created", "job started")
     }
     assert logged == {"job created": "auto", "job started": "auto"}
+
+
+# Redis briefly unreachable during a job
+
+
+class FlakyProgressStore(JobStore):
+    """A real JobStore whose progress writes fail, as when Redis restarts mid-job."""
+
+    def set_progress(self, job_id: str, progress: int) -> None:
+        raise RedisConnectionError("Connection closed by server.")
+
+
+def test_failed_progress_writes_do_not_fail_the_job(
+    client: TestClient,
+    job_queue: FakeJobQueue,
+    fake_redis: fakeredis.FakeRedis,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    media_path = submit(client, job_queue)
+    job_id = job_id_of(media_path)
+    flaky = FlakyProgressStore(fake_redis, ttl_sec=3600)
+
+    process_job(job_id, media_path, context(flaky, FakeEngine()))
+
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "done"
+    assert job["error_code"] is None
+    warnings = [r for r in caplog.records if r.getMessage().startswith("progress update failed")]
+    assert len(warnings) == 1  # one warning per job, not one per failed write
+    assert warnings[0].job_id == job_id  # type: ignore[attr-defined]
+    assert not [r for r in caplog.records if r.getMessage() == "job failed"]
+
+
+def test_progress_reporter_survives_redis_errors_and_recovers() -> None:
+    class SometimesDownStore(RecordingStore):
+        down = True
+
+        def set_progress(self, job_id: str, progress: int) -> None:
+            if self.down:
+                raise RedisConnectionError("down")
+            super().set_progress(job_id, progress)
+
+    store, clock = SometimesDownStore(), FakeClock()
+    reporter = ProgressReporter("job1", store, clock=clock)  # type: ignore[arg-type]
+
+    reporter(10)  # fails silently (one warning)
+    clock.now = 1.0
+    store.down = False
+    reporter(20)  # Redis is back: written
+
+    assert store.progress == [20]

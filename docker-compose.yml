@@ -13,6 +13,11 @@ x-app: &app
 services:
   redis:
     image: redis:7.4-alpine
+    # Append-only file, fsync once per second: a restart keeps the queue, job states and results.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -56,3 +61,4 @@ services:
 volumes:
   uploads:
   models:
+  redis-data:

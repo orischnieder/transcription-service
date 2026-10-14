@@ -237,3 +237,17 @@ def test_size_guard_only_applies_to_uploads(client: TestClient) -> None:
     response = client.get("/api/limits", headers={"Content-Length": str(10**12)})
 
     assert response.status_code == 200
+
+
+# Redis unavailable while reading jobs: a retryable 503, not a 500
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/jobs/abc", "/api/jobs/abc/transcript.txt", "/api/jobs/abc/transcript.srt"]
+)
+def test_redis_down_while_reading_returns_503(
+    client: TestClient, redis_server: fakeredis.FakeServer, path: str
+) -> None:
+    redis_server.connected = False
+
+    assert_error(client.get(path), 503, "queue_unavailable")

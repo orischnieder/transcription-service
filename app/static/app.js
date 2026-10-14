@@ -6,6 +6,7 @@
 (() => {
   const POLL_INTERVAL_MS = 1500;
   const MAX_POLL_FAILURES = 3; // consecutive network errors while polling before giving up
+  const UNAVAILABLE_RETRY_MS = 30000; // keep polling through 503s (e.g. Redis restarting) this long
 
   // Errors where the file itself is the problem: "Try again" asks for a different file.
   const FILE_ERRORS = new Set([
@@ -229,15 +230,25 @@
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   async function waitForJob(jobId) {
-    let failures = 0;
+    let failures = 0; // consecutive network errors
+    let unavailableSince = null; // start of the current run of 503 responses
     for (;;) {
       let job;
       try {
         job = await fetchJob(jobId);
         failures = 0;
+        unavailableSince = null;
       } catch (error) {
-        failures += 1;
-        if (error.code !== "network" || failures >= MAX_POLL_FAILURES) throw error;
+        if (error.code === "network") {
+          failures += 1;
+          if (failures >= MAX_POLL_FAILURES) throw error;
+        } else if (error.code === "queue_unavailable") {
+          // A short outage behind the API: the job keeps running, so keep asking.
+          unavailableSince = unavailableSince ?? Date.now();
+          if (Date.now() - unavailableSince >= UNAVAILABLE_RETRY_MS) throw error;
+        } else {
+          throw error;
+        }
         await sleep(POLL_INTERVAL_MS);
         continue;
       }
