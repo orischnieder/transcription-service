@@ -1,0 +1,39 @@
+# Lint, format, type checks and tests on every push and pull request.
+# No model is downloaded: the tests use FakeEngine and fakeredis. If ffprobe is not on the runner, the two
+# real-ffprobe integration tests skip themselves (they always run in the Docker test image).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Ruff (lint)
+        run: ruff check .
+
+      - name: Ruff (format)
+        run: ruff format --check .
+
+      - name: Mypy
+        run: mypy app scripts
+
+      - name: Tests
+        run: pytest

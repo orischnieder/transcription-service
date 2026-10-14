@@ -184,9 +184,9 @@ Format of each entry:
   MIT). First-run download: **464 MB** into the `models` volume (`HF_HOME=/models`), about 18 s on this
   connection; afterwards it loads from the cache in 1-2 s. (`base` is 142 MB.)
 - Reasoning: small still runs ~6x faster than real time on a laptop CPU, which is acceptable for an async,
-  queued service where the user sees progress. It is noticeably more robust than base on accented, noisy
-  and non-English audio, which a general upload service will receive; our English sample understates that
-  gap. Being wrong on accuracy costs the user more than waiting a few extra minutes.
+  queued service where the user sees progress. Larger Whisper models are generally reported to be more
+  robust than base on accented, noisy and non-English audio, which a general upload service will receive
+  (general knowledge, not measured here; our clean English sample would not show that gap). Being wrong on accuracy costs the user more than waiting a few extra minutes.
 - Alternatives: `base` (~3x faster, weaker outside clean English); `medium` / `large-v3` (better accuracy,
   too slow on CPU for this setup); `distil-whisper` variants (fast, but English-only).
 - Consequences: a 1-hour file takes ~10 minutes on this machine. The first job after a fresh install waits
@@ -595,8 +595,8 @@ Numbers come from the worker logs of that session (`faster-whisper-small`, CPU, 
 
 | Check | Result |
 |---|---|
-| English, quiet room (phone video) | Not tested: no separate quiet-room English video was recorded. Clean English is covered by `jfk.flac` and `physicsworks.wav` |
-| English with background noise (`en_noise.mov`, 22.6 s, 42 MB) | `done`: detected `en` (probability 0.68), 3 segments, 4.4 s (RTF 0.19). Transcript accurate; the only error was the name "Ori" transcribed as "Ory" (proper names are a known weak spot) |
+| English, quiet room (`en_noise.mov`, 22.6 s, 42 MB; recorded in a quiet room despite the file name) | `done`: detected `en` (probability 0.68), 3 segments, 4.4 s (RTF 0.19). Transcript accurate; the only error was the name "Ori" transcribed as "Ory" (proper names are a known weak spot) |
+| Background noise | Robustness to background noise was not measured |
 | Hebrew speech (`he_speech.mov`, 16.9 s, 31 MB) | `done`: detected `he` (probability 0.97), 4 segments, 4.4-4.5 s (RTF 0.26-0.27). RTL display correct. Accuracy noticeably lower than English (see "Hebrew accuracy and a Hebrew model option") |
 | Screen recording without sound | `done` with "No speech was found in this file.": the phone kept a silent audio track, so the file passed validation (ffprobe found an audio stream) and the model found no speech. A video with no audio track at all would instead be rejected as `invalid_media` (tested earlier with a generated MP4) |
 | Uploads folder after the jobs | Empty: every media file was deleted after its job |
@@ -726,3 +726,24 @@ Followed the README exactly, from a clone of `https://github.com/orischnieder/tr
   and a machine without the samples (the curl test used a copy of `samples/jfk.flac`).
 - Cleanup: the test project's containers and volumes were removed (`down -v`), both clones deleted, and
   the original stack rebuilt and restarted.
+
+## Final polish
+- **Correction: the English phone video was recorded in a quiet room.** `en_noise.mov` (22.6 s, 42 MB)
+  was recorded in a quiet room despite its file name; earlier entries called it "with background noise".
+  The checklist and README now say "quiet room" with the same result (accurate; "Ori" → "Ory").
+  **Robustness to background noise was not measured.** Statements that larger Whisper models handle
+  accents, noise and non-English audio better are worded as general knowledge, not as our measurement.
+- **Benchmark samples.** `samples/jfk.flac` and `samples/physicsworks.wav` are the test files from
+  [SYSTRAN/faster-whisper `tests/data`](https://github.com/SYSTRAN/faster-whisper/tree/master/tests/data)
+  (MIT). Verified byte-identical to the downloads from
+  `https://raw.githubusercontent.com/SYSTRAN/faster-whisper/master/tests/data/jfk.flac` and
+  `.../physicsworks.wav`. The README shows how to download them and run `scripts/benchmark.py` in the
+  worker image; the command was run as written (PowerShell and, with `MSYS_NO_PATHCONV=1`, Git Bash; without
+  the prefix Git Bash rewrites `/samples` to `C:/Program Files/Git/samples`).
+- **CI.** `.github/workflows/ci.yml` runs on every push and pull request: Python 3.12, `pip install -e
+  ".[dev]"`, `ruff check .`, `ruff format --check .`, `mypy app scripts`, `pytest`. No model is downloaded.
+  The workflow does not install ffmpeg, so the two real-ffprobe tests skip if the runner has no ffprobe;
+  they always run in the Docker test image. Verified by running the same steps in a clean `python:3.12-slim`
+  container without ffprobe (104 passed, 2 skipped). Not yet verified on GitHub itself (it runs on the next
+  push). Alternatives: running the Docker test image in CI (also covers ffprobe, but builds a 1.5 GB image
+  per run). README has a status badge; CI was removed from "Production next steps".

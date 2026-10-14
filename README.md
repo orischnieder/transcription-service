@@ -1,5 +1,7 @@
 # Transcription Service
 
+[![CI](https://github.com/orischnieder/transcription-service/actions/workflows/ci.yml/badge.svg)](https://github.com/orischnieder/transcription-service/actions/workflows/ci.yml)
+
 Upload an audio or video file and get a timestamped transcript, produced by an open-source Whisper model
 from Hugging Face running on your own machine. A small web page and a JSON API sit in front of a
 background worker, so the page stays responsive while the model works.
@@ -131,7 +133,7 @@ Each decision with its full reasoning and measurements is in [NOTES.md](NOTES.md
 |---|---|---|
 | **FastAPI** + Pydantic | Request validation, typed responses and OpenAPI docs at `/docs` out of the box | Flask (validation and docs by hand) |
 | **faster-whisper** with **`Systran/faster-whisper-small`** from Hugging Face (CTranslate2 conversion of `openai/whisper-small`, MIT) | Fast on CPU with `int8`, no PyTorch in the image; the model is still a Hugging Face model, loaded by repo id | `transformers` pipeline (needs PyTorch, slower on CPU) |
-| **small** rather than **base** | Benchmark below: small is ~3× slower but still ~6× faster than real time, and holds up better on accents, noise and non-English audio | `faster-whisper-base` (faster, weaker outside clean English) |
+| **small** rather than **base** | Benchmark below: small is ~3× slower but still ~6× faster than real time. Larger Whisper models are generally reported to hold up better on accents, noise and non-English audio (general knowledge, not measured here) | `faster-whisper-base` (faster) |
 | **Engine behind a `TranscriptionEngine` Protocol**, chosen by `ENGINE` | The rest of the code only knows `transcribe(path, language, on_progress)`. Tests use `FakeEngine`. The Hebrew model `ivrit-ai/whisper-large-v3-turbo-ct2` loaded with no code change, only `WHISPER_MODEL` | Calling faster-whisper directly from the task |
 | **Redis + RQ** with **`SimpleWorker`** | Simple queue with timeouts; `SimpleWorker` runs jobs in its own process, so the model is loaded once, not per job | Celery (more setup); a forking worker (reloads the model for each job) |
 | **Validation before queueing**: language → extension → size (counted while copying) → empty → `ffprobe` (must have an audio stream, read duration) → duration | Cheap checks first; the file's real content is checked, not its name or `Content-Type`; any failure deletes the file | Trusting the extension; failing later inside the worker |
@@ -139,7 +141,7 @@ Each decision with its full reasoning and measurements is in [NOTES.md](NOTES.md
 | **No-build UI**: one HTML page, vanilla JS and CSS, served by FastAPI | Works offline / air-gapped, nothing to compile, no external assets | React or Vue with a build step |
 
 **Model benchmark** (`samples/physicsworks.wav`, 203 s English lecture; Intel Core i7-1255U laptop, CPU,
-`int8`, Docker with 12 CPUs; second run of each model):
+`int8`, VAD off, Docker with 12 CPUs; second run of each model):
 
 | Model | Download | Load (cached) | Transcription | Real-time factor |
 |---|---|---|---|---|
@@ -149,6 +151,24 @@ Each decision with its full reasoning and measurements is in [NOTES.md](NOTES.md
 Real-time factor = transcription time ÷ audio length (below 1 is faster than real time). The two
 transcripts were 98% identical on this clean recording. With the VAD filter on (now the default), small
 took 29.5 s instead of 31.3 s in a same-process comparison.
+
+**Reproducing it.** The samples are the test files of the faster-whisper project
+([SYSTRAN/faster-whisper, `tests/data`](https://github.com/SYSTRAN/faster-whisper/tree/master/tests/data), MIT):
+[`jfk.flac`](https://github.com/SYSTRAN/faster-whisper/blob/master/tests/data/jfk.flac) (11 s) and
+[`physicsworks.wav`](https://github.com/SYSTRAN/faster-whisper/blob/master/tests/data/physicsworks.wav) (203 s).
+They are not committed (`samples/` is git-ignored). `scripts/benchmark.py` runs inside the worker image and
+prints load time, transcription time and real-time factor:
+
+```bash
+mkdir -p samples
+curl -L -o samples/jfk.flac https://raw.githubusercontent.com/SYSTRAN/faster-whisper/master/tests/data/jfk.flac
+curl -L -o samples/physicsworks.wav https://raw.githubusercontent.com/SYSTRAN/faster-whisper/master/tests/data/physicsworks.wav
+docker compose build worker
+docker compose run --rm --no-deps -v ./samples:/samples:ro worker python -m scripts.benchmark /samples/physicsworks.wav --model Systran/faster-whisper-base
+```
+
+Options: `--model`, `--no-vad`, `--language en`, `--offline`. In Git Bash on Windows, prefix the last command
+with `MSYS_NO_PATHCONV=1` so `/samples` is not rewritten to a Windows path.
 
 ---
 
@@ -243,6 +263,10 @@ pytest
 ruff check . && ruff format --check . && mypy app scripts
 ```
 
+**CI:** [GitHub Actions](.github/workflows/ci.yml) runs `ruff check`, `ruff format --check`, `mypy` and
+`pytest` on Python 3.12 for every push and pull request (no model download; the two ffprobe tests skip
+if ffprobe is not on the runner).
+
 **What the tests cover:** every validation error (`400/413/415/422`, including the early `Content-Length`
 check), unknown job (`404`), transcript not ready (`409`), Redis or queue down (`503`) with cleanup, the
 full job lifecycle with `FakeEngine` (queued → done with result), engine failure and timeout → `failed`
@@ -256,14 +280,14 @@ served without external assets.
 |---|---|
 | `jfk.flac` (11 s) | Exact transcript |
 | `physicsworks.wav` (3:23 lecture) | 47 segments, RTF 0.13–0.17 across runs |
-| Phone video, English with background noise (22.6 s, 42 MB) | Accurate; the only error was the name "Ori" written as "Ory" |
+| Phone video, English, quiet room (22.6 s, 42 MB) | Accurate; the only error was the name "Ori" written as "Ory" |
 | Phone video, Hebrew (16.9 s, 31 MB) | Detected Hebrew (0.97), displayed right-to-left; accuracy noticeably lower than English |
 | Phone screen recording without sound | "No speech was found" (silent audio track) |
 | Video without an audio track, fake `.mp3`, 61-minute file, empty file, `.txt` | Rejected with the matching error message |
 | Worker killed mid-job, then restarted | Job marked `failed` (`worker_restarted`), file deleted |
 | Uploads folder after all jobs | Empty |
 
-Not tested: a separate quiet-room English phone video.
+Robustness to background noise was not measured.
 
 ---
 
@@ -280,7 +304,6 @@ Not tested: a separate quiet-room English phone video.
 - **Extract the audio track** on upload (or in the browser) to store and move far less data for video.
 - **Server-sent events** instead of polling, and **job cancellation**.
 - **Metrics and alerts**: queue length, job duration, real-time factor, failure rate by error code.
-- **CI**: lint, type checks and tests on every push.
 
 ---
 

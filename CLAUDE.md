@@ -30,7 +30,7 @@ This is a take-home assignment for a backend / AI engineering role. Requirements
 
 ## Working agreement (important)
 
-The human (Ori) owns every decision and must be able to explain every line in an interview.
+The human (Ori) owns every decision.
 
 1. Work on **one milestone from `PLAN.md` at a time**. Do not start the next milestone until Ori says so.
 2. At the end of each milestone:
